@@ -1,0 +1,1513 @@
+---
+title: "BCCH_Tb_data"
+author: "Deborah Hawkshaw"
+date: "2023-06-27"
+output: html_document
+---
+
+R version: 4.3.1
+
+## Description:
+
+The following code was written to visualize, screen and analyze body temperature and foraging data collected from black-capped chickadees as a part of Deborah M. Hawkshaw's PhD thesis and the "Individual variation in diurnal body temperature and foraging activity in overwintering black-capped chickadees" manuscript. Data was collected at a single feeder (thermal feeder) located in the University of Alberta Botanic Garden (near Edmonton, Alberta, Canada) using temperature-sensing passive integrated transponder (PIT) tags. Data was collected and analyzed to characterize within and among-individual co-variation in diurnal body temperature and foraging rates. After data was screened and final data sets were created, the data was analyzed with Bivariate Bayesian mixed effect models. Code to summarize values presented the main text as well as to produce tables and figures presented in the main text and electronic supplementary materials are also included. Code was written by Deborah M. Hawkshaw with input from Kimberley J. Mathot.
+
+### Load required packages
+
+```{r}
+library(ggplot2) # version 3.4.2
+library(tidyselect) # version 1.2.0
+library(dplyr) # version 1.1.2
+library(data.table) # version 1.14.8
+library(lubridate) # version 1.9.2
+library(lme4) # version 1.1-33
+library(MCMCglmm) # version 2.35
+library(tidyverse) # version 2.0.0
+library(broom) # version 1.0.5
+library(nadiv) # version 2.17.2
+library(broom.mixed) # version 0.2.9.4
+library(ggpubr) # version 0.60
+```
+
+### Load body temperature foraging visit data files
+```{r}
+# Prevent scientific notation so can see full numbers 
+options(scipen=999) 
+
+# Load in data files
+data_2023_02_03 <- read.csv(file = "feeder_14_download_2023_02_03.csv", header = TRUE)
+data_2023_02_25 <- read.csv(file = "feeder_14_download_2023_02_25.csv", header = TRUE)
+data_2023_03_17 <- read.csv(file = "feeder_14_download_2023_03_17.csv", header = TRUE)
+
+# Merge data files together
+Tb_data <- rbind(data_2023_02_03, data_2023_02_25, data_2023_03_17)
+
+# Subset data set to include days when people visited the feeder but removing the RFID record of the people visits and records from March and Jan 10th (day that reader sensitivity was changed and I was at the feeder back and forth for a while). 
+
+Tb_data_v2 <- subset(Tb_data, Scan.Date > "01-10-2023" & Scan.Date < "03-01-2023" & HEX.Tag.ID != "3DD.0077C58F24") 
+
+# Should be no records with tag 989.002009435940 (HexCode 3DD.0077C58F24)
+observer <- subset(Tb_data_v2, HEX.Tag.ID == "3DD.0077C58F24") # 0 observations
+
+# Code variables to correct object type
+Tb_data_v2$HEX.Tag.ID <- as.factor(Tb_data_v2$HEX.Tag.ID)
+Tb_data_v2$DEC.Tag.ID <- as.factor(Tb_data_v2$DEC.Tag.ID)
+
+# Before coding temperature as a numeric, determining the number of times temperatures were detected above the upper and lower detection range. For reporting in Electronic Supplementary Materials.
+length(which(Tb_data_v2$Temperature.C == "LL.L")) # 233 below lower limit
+length(which(Tb_data_v2$Temperature.C == "HH.H")) # 40 times above upper limit
+length(which(Tb_data_v2$Temperature.C == "")) # 1294 times temperature wasn't recorded
+
+Tb_data_v2$Temperature.C <- as.numeric(Tb_data_v2$Temperature.C)
+```
+
+### Initial visualizing, summarizing, screening data.
+```{r}
+# How many birds detected at the thermal feeder?
+length(unique(Tb_data_v2$HEX.Tag.ID))
+# 20 unique individuals using the feeders
+
+# How many days did the birds use the feeder
+length(unique(Tb_data_v2$Scan.Date))
+# 49 unique days 
+
+# Determine the number of days for each bird
+bird_unique_days <- Tb_data_v2 %>% 
+  group_by(HEX.Tag.ID) %>%
+  summarise(unique.days = length(unique(Scan.Date)))
+
+range(as.numeric(bird_unique_days$unique.days))
+mean(as.numeric(bird_unique_days$unique.days))
+sd(as.numeric(bird_unique_days$unique.days))
+
+# Total number of times the body temperature wasn't recorded during a detection
+sum(is.na(Tb_data_v2$Temperature.C)) / length(Tb_data_v2$Temperature.C) * 100 # about 1% (1.19%) of detection didn't have a recording or had LL or HH recorded 
+
+# Histogram of body temperatures
+hist(Tb_data_v2$Temperature.C) 
+
+# Histogram of body temperatures for each individual
+ggplot(Tb_data_v2, aes(x = Temperature.C)) +
+  geom_histogram() +
+  facet_wrap(~HEX.Tag.ID) +
+  theme_bw() 
+
+# Scatter plots of body temperatures across time of day for each individual
+ggplot(Tb_data_v2, aes(y = Temperature.C, x = Scan.Time)) +
+  geom_point() +
+  facet_wrap(~HEX.Tag.ID) +
+  theme_bw() 
+
+```
+
+### Visually screen of spurious data + filtering
+
+Upon looking at the data some body temperature values seem quite high and low or there appear to be large jumps in body temperature in a short period of time (calling spurious data). There also appears to be two individuals with body temperatures consistently colder than the rest.
+
+Will generate plots of body temperature detections per bird per day and visual identify and screen out the outliers. After visually identifying data points will find the value in the data frame and determine if the value was in fact a large jump in body temperature in a short period of time. Based on Arteaga-Torres et al. 2021 detections within 12 sec are the same feeder visit, so need to assign detections to a visits number for each day for each bird. Then will calculate the median temperature per visit, so that each visit has one body temperature associated with it. After looking at the number of detections that can be attributed to one visit most visits only have 1-2 detections so taking the median to screen data/remove spurious data is not robust to those visits.
+
+#### Assigning detections of a bird to a visit number.
+```{r}
+# First turn time into a continuous number 
+Tb_data_v2$Time.continuous <- as.numeric(as.POSIXct(strptime(Tb_data_v2$Scan.Time, format = "%H:%M:%OS")))-as.numeric(as.POSIXct(strptime("0", format = "%S")))
+
+# Based on Arteaga-Torres et al. 2021 detections within 12 sec are the same feeder visit
+# First determine/label unique visits to feeder
+# Setting the order from first detection to last detection - on 2023-07-17 when tried to create final data set detected a slight error which was cause by rows being out of order seems to have only occurred once. 
+
+Tb_data_v2 <- setorder(Tb_data_v2, HEX.Tag.ID, Scan.Date, Time.continuous)
+
+HEX.tag <- as.character(unique(Tb_data_v2$HEX.Tag.ID)) # object of each birds hexidecimal code to loop through in for loops. 
+
+#### Now to number visits for each bird in each day ####
+Tb_data_v2$visit.number <- as.numeric("")
+Tb_data_v2$time.diff <- as.numeric("")
+HEX.tag <- as.character(unique(Tb_data_v2$HEX.Tag.ID))
+Tb_data_v3 <- {}
+
+for (q in HEX.tag)
+{
+  HEX.tag.records <- subset(Tb_data_v2, HEX.Tag.ID == q )
+  HEX.tag.records[1,16] <- 1 # first detection get automatically label as part of visit 1
+  j <- 1 # reset counter for each bird
+  for (i in 2:nrow(HEX.tag.records)) 
+  {
+      if (HEX.tag.records[i, ]$Time.continuous - HEX.tag.records[i - 1 , ]$Time.continuous < 12 && HEX.tag.records[i, ]$Time.continuous - HEX.tag.records[i - 1 , ]$Time.continuous > 0)
+      {
+      HEX.tag.records[i, ]$visit.number <- j
+      }
+      else 
+      {
+        HEX.tag.records[i, ]$visit.number <- j + 1
+        j = j + 1
+      }
+    if (i == nrow(HEX.tag.records))
+    {
+      if (HEX.tag.records[i, ]$Time.continuous - HEX.tag.records[i - 1 , ]$Time.continuous < 12 && HEX.tag.records[i, ]$Time.continuous - HEX.tag.records[i - 1 , ]$Time.continuous > 0)
+      {
+        HEX.tag.records[i, ]$visit.number <- j
+      }
+      else 
+      {
+      HEX.tag.records[i, ]$visit.number <- j + 1
+      }
+    }
+    
+    HEX.tag.records[i, ]$time.diff <- HEX.tag.records[i, ]$Time.continuous - HEX.tag.records[i - 1 , ]$Time.continuous # this is just to see if loop is working correctly
+    
+    if (HEX.tag.records[i-1,]$Scan.Date != HEX.tag.records[i,]$Scan.Date)
+    {
+      HEX.tag.records[i, ]$time.diff <- NA
+    }
+    
+  }
+  Tb_data_v3 <- rbind(Tb_data_v3, HEX.tag.records)
+}
+
+```
+
+#### Visual screening of body temperatures during feeder visits. 
+```{r}
+#### Generating plots for each bird for each day to identify spurious data body temperature detections ####
+
+for (i in HEX.tag) 
+{
+  HEX.tag.records <- subset(Tb_data_v2, HEX.Tag.ID == i )
+  
+  plot <- (ggplot(HEX.tag.records, aes(y = Temperature.C, x = Time.continuous)) +
+  geom_point() +
+  facet_wrap(~Scan.Date) +
+  theme_bw() +
+  ggtitle(paste0(i)))
+  
+  ggsave(plot, file=paste0("Tb_plot_", i,".png"), width = 35, height = 15, units = "cm")
+  # scatter of each temperature measure vs time within each day
+} 
+
+#### After identifying spurious data visually, scroll through the data frame to find the detection and determining if the temperature record was a large jump in a short period of time (i.e., within a visit or between visits that occured in short succession)
+
+#### Now create a column in the data frame (Tb_data_v3) that indicates flagged detections ####
+
+# Initially label all detections as not spurious
+Tb_data_v3$spurious <- "N" 
+
+# Now add in labels for flagged detections. 
+Tb_data_v3$spurious[c(111146, 111352, 112323,113014, 113135, 113386, 113542, 113850,113863,114187,114417,114494,114710,115481,115893,116168,116438,116632,116634,116823,117105,117385,117511,117803,117996,118080,118388,119181,120380,120491,121412,122032,123139,123177,123908,125493,126830,127284,128589,94474,94700,94759,94775,94831,94874,94919,94971,95165,95525,95529,95743,95788,95858,95924,96024,96050,96139,96181,96214,96766,96772,97277,97645,97689,97820,97903,97919,97967,98108,98128,98196,98297,98377,98392,98541,98617,98862,99023,98884,99327,99995,100186,101028,102248,106727,108035,1010,1680,3503,34637,34970,36892,39092,40395,40945,41555,41651,43267,43288,44010,45606,46275,46826,47375,48389,49134,49170,49763,50061,51116,52013,52823,53026,53034,53062,53155,53463,53504,53563,53585,53606,53769,53895,53965,54083,54207,54308,54323,54467,54498,54570,54744,54872,54962,54986,55120,55359,55870,55882,56006,56025,56057,56410,7521,9320,9453,11462,12866,13628,16612,17176,17899,19103,19850,20114,20536,20552,20718,20770,20860,21867,22632,22738,23050,23671,24424,24647,25541,25689,26028,26899,27491,28071,61676,62021,62057,62324,62901,63096,63108,63590,63910,65017,66236,66450,66710,67126,67303,67721,68029,68309,68601,68805,68938,69248,69424,69564,70320,70843,71437,71525,71570,71612,72855,74761,74927,76069,77909,79893,81292,82734,83442,83481,85607,86904,89995,91169,91612,91800,93030,94163)] <- "Y"
+
+#### Now generate plots showing flagged detections ####
+
+# Note: This code is the same as the chunk of code at the end of this file used to generate supplementary figures S3.1 - 3.20 but the code at the end of the file is formatted nicely. The code below was used to initially check that the correct detections/data points were labelled as spurious
+
+for (i in HEX.tag) 
+{
+  HEX.tag.records <- subset(Tb_data_v3, HEX.Tag.ID == i )
+  
+  plot <- (ggplot(HEX.tag.records, aes(y = Temperature.C, x = Time.continuous, color = spurious)) +
+  geom_point() +
+  scale_color_manual(values = c("N" = "black","Y"="red"), name = "Spurious data point", labels = c("No", "Yes")) +
+  facet_wrap(~Scan.Date) +
+  theme_bw() +
+  ggtitle(paste0(i))) + xlab("Time (sec)") + ylab(expression("T"[b] ~"(°C)"))
+  
+  ggsave(plot, file=paste0("Tb_plot2_", i,".png"), width = 35, height = 15, units = "cm")
+  # scatter of each temperature measure vs time within each day
+} 
+
+# Count number of spurious data points 
+summary(as.factor(Tb_data_v3$spurious)) #221 spurious data points
+221/nrow(Tb_data_v3)*100 # 0.167%
+
+```
+
+#### Generate data sets/data frames to calculate inter-visit interval and run analyses on
+
+Remove spurious data points, calculate median body temperature in data frames with and without spurious data included 
+```{r}
+#### Now generate dataset with spurious data removed to run analysis on ####
+
+Tb_data_v4 <- Tb_data_v3
+
+# Remove temperature value for each flagged spurious detection
+Tb_data_v4$Temperature.C[c(111146, 111352, 112323,113014, 113135, 113386, 113542, 113850,113863,114187,114417,114494,114710,115481,115893,116168,116438,116632,116634,116823,117105,117385,117511,117803,117996,118080,118388,119181,120380,120491,121412,122032,123139,123177,123908,125493,126830,127284,128589,94474,94700,94759,94775,94831,94874,94919,94971,95165,95525,95529,95743,95788,95858,95924,96024,96050,96139,96181,96214,96766,96772,97277,97645,97689,97820,97903,97919,97967,98108,98128,98196,98297,98377,98392,98541,98617,98862,99023,98884,99327,99995,100186,101028,102248,106727,108035,1010,1680,3503,34637,34970,36892,39092,40395,40945,41555,41651,43267,43288,44010,45606,46275,46826,47375,48389,49134,49170,49763,50061,51116,52013,52823,53026,53034,53062,53155,53463,53504,53563,53585,53606,53769,53895,53965,54083,54207,54308,54323,54467,54498,54570,54744,54872,54962,54986,55120,55359,55870,55882,56006,56025,56057,56410,7521,9320,9453,11462,12866,13628,16612,17176,17899,19103,19850,20114,20536,20552,20718,20770,20860,21867,22632,22738,23050,23671,24424,24647,25541,25689,26028,26899,27491,28071,61676,62021,62057,62324,62901,63096,63108,63590,63910,65017,66236,66450,66710,67126,67303,67721,68029,68309,68601,68805,68938,69248,69424,69564,70320,70843,71437,71525,71570,71612,72855,74761,76069,74927,77909,79893,81292,82734,83442,83481,85607,86904,89995,91169,91612,91800,93030,94163)] <- NA
+
+# Calculate median temperature for each visit
+Tb_data_v4 <- data.table(Tb_data_v4)
+Tb_data_v4 <- setorder(Tb_data_v4, HEX.Tag.ID, Scan.Date, Time.continuous)
+Tb_data_v5 <- Tb_data_v4[, .(date = data.table::first(Scan.Date), first.visit.time = data.table::first(Scan.Time), first.visit.time.continuous = data.table::first(Time.continuous), median.visit.temperature.C = median(Temperature.C, na.rm=TRUE), number.detections = sum(!is.na(Temperature.C))), by= c("HEX.Tag.ID", "visit.number")] # na.rm = TRUE causes any detections where body temperature was not recorded to not be included when calculating the median Tb for a particular visit, added "number.detections" to serve as a count of the number of detections that went in to each visits median temperature calculation.
+
+#### Generate plots of the median temperature per visit for each bird for each day ####
+# Currently commented out but can remove # to view plots
+# for (i in HEX.tag) 
+# {
+#  HEX.tag.records <- subset(Tb_data_v5, HEX.Tag.ID == i )
+  
+#  plot <- (ggplot(HEX.tag.records, aes(y = median.visit.temperature.C, x = # first.visit.time.continuous)) +
+#  geom_point() +
+#  facet_wrap(~date) +
+#  theme_bw() +
+#  ggtitle(paste0(i)))
+  
+#  ggsave(plot, file=paste0("Median_Tb_plot", i,".png"), width = 35, height = 15, units = "cm")
+# scatter of each temperature measure vs time within each day
+# } 
+
+###### Generate data set with spurious data not removed to run analyses on ######
+
+# As the identification and decision to remove the body temperature values of certain detections is subjective will generate data set with the detections to run analyses on to see if this influences results.
+Tb_data_v4_with_sp <- data.table(Tb_data_v3)
+Tb_data_v4_with_sp <- setorder(Tb_data_v4_with_sp, HEX.Tag.ID, Scan.Date, Time.continuous)
+Tb_data_v5_with_sp <- Tb_data_v4_with_sp[, .(date = data.table::first(Scan.Date), first.visit.time = data.table::first(Scan.Time), first.visit.time.continuous = data.table::first(Time.continuous), median.visit.temperature.C = median(Temperature.C, na.rm=TRUE), number.detections = sum(!is.na(Temperature.C))), by= c("HEX.Tag.ID", "visit.number")] #na.rm = TRUE causes any detections where body temperature was not recorded to not be included when calculating the median Tb for a particular visit, added "number.detections" to serve as a count of the number of detections that went in to each visits median temperature calculation.
+
+```
+
+### Adding in information on thermal birds (i.e., sex)
+
+#### Determining if there is sex data for all of the birds or if I will need to use the discriminant function to assign sex (two thermal birds did not have sex assigned)
+```{r}
+# Load in bird sex, ring number and leg band HEX code info
+thermal_bird_info <- read.csv(file = "thermal_bird_info.csv", header = TRUE) 
+
+# Generate object with the unique hexidecimal code of each bird included in study
+included_birds <- as.data.frame(unique(Tb_data_v5$HEX.Tag.ID)) 
+
+names(included_birds)[1] <- "ThermalHexCode" # changing name of variable to match that in thermal_bird_info
+
+# Merge file
+included_thermal_birds_info <- merge(included_birds, thermal_bird_info, by = "ThermalHexCode")
+
+# There is an discrepancy in the formatting of the HEX codes in the thermal_bird_info.csv and in the Tb data csv files. In the BCCH data base the codes were added without any periods (.) while the BioMark system retained them when writing the visit data to file. So when I am trying to merge the files the new object contains no data
+
+# Code below removing the "." from the included_birds object hexidecimal codes so that the files will merge
+
+included_birds$ThermalHexCode <- gsub(".", "", as.character(included_birds$ThermalHexCode), fixed=TRUE)
+
+# trying again to merge again, should work this time
+
+included_thermal_birds_info <- merge(included_birds, thermal_bird_info, by = "ThermalHexCode")
+
+# works now
+# two of the thermal tag birds included in the dataset do not have sex assignment so will need to use the discriminate function to determine their sex and then add that data into the "thermal_bird_info.csv" file.
+
+```
+
+##### Determine sex via discriminant function developed in Sheeraja Shridharan's thesis.
+
+Function recommended in thesis is 0.55886(body mass) + 1.0064(wing length) + 0.28042(tarsus length). Scores less than 77 are considered female and scores greater than 81 are considered male.
+```{r}
+# Load file, this data was pulled from the BCCH database 
+thermal_morpho <- read.csv(file = "thermal_bird_morphometric_data.csv", header = TRUE)
+
+# Remove row with no data
+thermal_morpho_v2 <- thermal_morpho[-c(4),]
+
+# One bird has measurements taken twice so I will take the average of the two measurements 
+# Score for bird 1 (Ring number: 2960-72716)
+Score1 <- 0.55886*((thermal_morpho_v2[1,4]+thermal_morpho_v2[3,4])/2) + 1.0064*((thermal_morpho_v2[1,5]+thermal_morpho_v2[3,5])/2) + 0.28042*((thermal_morpho_v2[1,6]+thermal_morpho_v2[3,6])/2)
+# Score is 81.08317 which suggest bird is a male 
+
+# Score for bird 2 (Ring number: 2960-72801)
+Score2 <- 0.55886*(thermal_morpho_v2[2,4]) + 1.0064*(thermal_morpho_v2[2,5]) + 0.28042*(thermal_morpho_v2[2,6]/2)
+# Score is 78.936472 which is an intermediate value (can't say if it is a male or female)
+
+# Write in results to data file 
+thermal_bird_info_v2 <- thermal_bird_info
+thermal_bird_info_v2[11,5] <- "Male"
+thermal_bird_info_v2[13,5] <- "Unknown"
+
+# Write csv file so there is a version with all sex assignments on file 
+write.csv(thermal_bird_info, file = "thermal_bird_info_v2.csv", row.names = FALSE)
+
+# Add this info to the included_thermal_birds_info object 
+included_thermal_birds_info[10,5] <- "Male"
+included_thermal_birds_info[12,5] <- "Unknown"
+```
+
+### Generate final data sets to run analyses on
+
+#### Need to add in weather data, calculate IVI and make data sets with and without spurious data and with and without individuals with the consistently low body temperatures.
+```{r}
+# Load in weather data, which will be merged into final data set after IVI is calculated.
+weather <- read.csv(file = "temperature_daylength_20230111_20230228.csv", header = TRUE)
+
+# Rename Date to date and convert to a date variable. 
+names(weather)[1] <- "date"
+weather$date <- as.Date(weather$date, format = "%Y-%m-%d")
+
+# 2023-12-11: Scaling weather variables here so that the mean and sd are the same across all models with the different datasets (i.e. model with all individuals, model with the two individuals removed, models using mean Tb and total foraging visits)
+weather$scaled.Avg.temp.C <- as.numeric(scale(weather$Avg.temp.C))
+weather$scaled.Daylength.Hr <- as.numeric(scale(weather$Daylength.Hr))
+
+##### Generating final dataset without spurious data #####
+
+# Add thermal bird info (sex data) to the body temperature foraging visit object.
+
+# There is an discrepancy in the formatting of the HEX codes in the thermal_bird_info.csv and in the RFID detection data csv files. In the BCCH data base the codes were added without any periods (.) while the BioMark system retained them when writing the visit data to file. So when merging the files the new object contains no data
+
+# Code below removing the "." from the included_birds HEX Codes so that the files will merge
+Tb_data_v6 <- Tb_data_v5
+
+# Rename column heading to that files can merge
+names(Tb_data_v6)[1] <- "ThermalHexCode"
+
+# Remove the period 
+Tb_data_v6$ThermalHexCode <- gsub(".", "", as.character(Tb_data_v6$ThermalHexCode), fixed=TRUE)
+
+# Now Tb_data_v6 has all of the associated thermal bird info (sex, transponder hex code, ring number)
+Tb_data_v6 <- merge(Tb_data_v6, included_thermal_birds_info, by = "ThermalHexCode")
+
+# Remove columns that aren't needed (Visit number column and columns related to daily mean and sd of body temperature and deviations of visit temps and thermal decimal code)
+Tb_data_v6 <- Tb_data_v6[,-c(2,7,9)] 
+
+# Format date variable 
+Tb_data_v6$date <- as.Date(Tb_data_v6$date, format = "%m-%d-%Y") 
+
+# Change order of columns to a more logical order: date then time, time continuous, the ring numb, transponder hex code, then sex and finally visit temp
+Tb_data_v6 <- Tb_data_v6[,c(2,3,4,6,7,1,8,5)]
+
+# Order rows by bird, date and time
+thermal_bird_forage <- setorder(Tb_data_v6, CatchRingNumber, date, first.visit.time.continuous)
+
+# Now calculate IVI 
+# Should all be greater that 12 seconds
+thermal_bird_forage$IVI <- as.numeric("")
+
+for (i in 2:nrow(thermal_bird_forage)) 
+{
+    
+    thermal_bird_forage[i, ]$IVI <- thermal_bird_forage[i, ]$first.visit.time.continuous - thermal_bird_forage[i - 1 , ]$first.visit.time.continuous # time between previous visit and the current one
+    
+    if (thermal_bird_forage[i-1,]$date != thermal_bird_forage[i,]$date | thermal_bird_forage[i-1,]$CatchRingNumber != thermal_bird_forage[i,]$CatchRingNumber) # if the date OR bird id of the previous visit is not the same as the current the IVI is NA
+    {
+     thermal_bird_forage[i, ]$IVI <- NA
+    }
+}
+
+# Set first row IVI as NA, as time would represent the time between the last visit on the previous day and the first visit of the current day.
+thermal_bird_forage[1,]$IVI <- NA
+
+# Merge weather data with body temperature foraging visit data.
+thermal_bird_forage_v2 <- merge(thermal_bird_forage, weather, by = "date")
+thermal_bird_forage_v2$TransponderHexCode <- as.factor(thermal_bird_forage_v2$TransponderHexCode)
+
+# Write csv file so all data used in analyses are contained in one file.
+# write.csv(file = "thermal_bird_forage.csv", thermal_bird_forage_v2, row.names = FALSE)
+
+# Generate data set with individuals with different body temperature that are quite low compared to the rest. Thermal hexidecimal codes are 3D920D4817F23 and 3D920D4817F15
+thermal_bird_forage_v3 <- subset(thermal_bird_forage_v2, ThermalHexCode != "3D920D4817F23")
+thermal_bird_forage_v3 <- subset(thermal_bird_forage_v3, ThermalHexCode != "3D920D4817F15")
+
+# Write csv file so all data used in analyses are contained in one file.
+# write.csv(file = "thermal_bird_forage.csv", thermal_bird_forage_v2, row.names = FALSE)
+
+##### Generating final dataset with spurious data for comparison #####
+
+# First add thermal bird information to body temperature foraging visit object
+
+# There is an discrepancy in the formatting of the HEX codes in the thermal_bird_info.csv and in the Tb data csv files. In the BCCH data base the codes were added without any periods (.) while the BioMark system retained them when writing the visit data to file. So when I am trying to merge the files the new object contains no data
+
+# Code below removing the "." from the included_birds HEX Codes so that the files will merge
+
+Tb_data_v6_with_sp <- Tb_data_v5_with_sp
+# Rename column heading to that files can merge
+names(Tb_data_v6_with_sp)[1] <- "ThermalHexCode"
+
+# Remove the period 
+Tb_data_v6_with_sp$ThermalHexCode <- gsub(".", "", as.character(Tb_data_v6_with_sp$ThermalHexCode), fixed=TRUE)
+
+Tb_data_v6_with_sp <- merge(Tb_data_v6_with_sp, included_thermal_birds_info, by = "ThermalHexCode")
+
+# Remove columns that aren't needed (Visit number column and columns related to daily mean and sd of body temperature and deviations of visit temps and thermal decimal code)
+Tb_data_v6_with_sp <- Tb_data_v6_with_sp[,-c(2,7,9)] 
+
+# Format date variable 
+Tb_data_v6_with_sp$date <- as.Date(Tb_data_v6_with_sp$date, format = "%m-%d-%Y") 
+
+# Change order of columns to a more logical order: date then time, time continuous, the ring numb, transponder hex code, then sex and finally visit temp
+Tb_data_v6_with_sp <- Tb_data_v6_with_sp[,c(2,3,4,6,7,1,8,5)]
+
+# Order rows by bird, date and time
+thermal_bird_forage_with_sp <- setorder(Tb_data_v6_with_sp, CatchRingNumber, date, first.visit.time.continuous)
+
+# Now calculate IVI 
+# Should all be greater than 12 seconds
+
+thermal_bird_forage_with_sp$IVI <- as.numeric("")
+
+for (i in 2:nrow(thermal_bird_forage_with_sp)) 
+{
+    
+    thermal_bird_forage_with_sp[i, ]$IVI <- thermal_bird_forage_with_sp[i, ]$first.visit.time.continuous - thermal_bird_forage_with_sp[i - 1 , ]$first.visit.time.continuous # time between previous visit and the current one
+    
+    if (thermal_bird_forage_with_sp[i-1,]$date != thermal_bird_forage_with_sp[i,]$date | thermal_bird_forage_with_sp[i-1,]$CatchRingNumber != thermal_bird_forage_with_sp[i,]$CatchRingNumber) # if the date OR bird id of the previous visit is not the same as the current the IVI is NA
+    {
+     thermal_bird_forage_with_sp[i, ]$IVI <- NA
+    }
+}
+
+# Set first row IVI as NA
+thermal_bird_forage_with_sp[1,]$IVI <- NA
+
+# Merge weather data with body temperature foraging visit data.
+thermal_bird_forage_with_sp_v2 <- merge(thermal_bird_forage_with_sp, weather, by = "date")
+thermal_bird_forage_v2$TransponderHexCode <- as.factor(thermal_bird_forage_v2$TransponderHexCode)
+
+```
+
+### Analyses
+
+#### Univariate Models
+```{r}
+##### Models with all individuals #####
+hist(thermal_bird_forage_v2$IVI)
+model1 <- lmer(IVI ~ scaled.Avg.temp.C + scaled.Daylength.Hr + (1|TransponderHexCode) + (1|date), data = thermal_bird_forage_v2, na.action = na.exclude)
+summary(model1) # Shows low repeatability 
+hist(resid(model1))
+qqnorm(resid(model1))
+qqline(resid(model1))
+
+hist(thermal_bird_forage_v2$median.visit.temperature.C)
+model2 <- lmer(median.visit.temperature.C ~ scaled.Avg.temp.C + scaled.Daylength.Hr + (1|TransponderHexCode) + (1|date), data = thermal_bird_forage_v2, na.action = na.exclude)
+summary(model2)
+hist(resid(model2))
+qqnorm(resid(model2))
+qqline(resid(model2))
+
+###### Models with spurious data #####
+hist(thermal_bird_forage_with_sp_v2$IVI)
+model1_with_sp <- lmer(IVI ~ scaled.Avg.temp.C + scaled.Daylength.Hr + (1|TransponderHexCode) + (1|date), data = thermal_bird_forage_with_sp_v2, na.action = na.exclude)
+summary(model1_with_sp)
+hist(resid(model1_with_sp))
+qqnorm(resid(model1_with_sp))
+qqline(resid(model1_with_sp))
+
+
+hist(thermal_bird_forage_with_sp_v2$median.visit.temperature.C)
+model2_with_sp <- lmer(median.visit.temperature.C ~ scaled.Avg.temp.C + scaled.Daylength.Hr + (1|TransponderHexCode) + (1|date), data = thermal_bird_forage_with_sp_v2, na.action = na.exclude)
+summary(model2_with_sp)
+hist(resid(model2_with_sp))
+qqnorm(resid(model2_with_sp))
+qqline(resid(model2_with_sp))
+
+##### Models without individuals 3D920D4817F23 and 3D920D4817F15 #####
+
+hist(thermal_bird_forage_v3$IVI)
+model1.2 <- lmer(IVI ~ scaled.Avg.temp.C + scaled.Daylength.Hr + (1|TransponderHexCode) + (1|date), data = thermal_bird_forage_v3, na.action = na.exclude)
+summary(model1.2)
+hist(resid(model1.2))
+qqnorm(resid(model1.2))
+qqline(resid(model1.2))
+
+
+hist(thermal_bird_forage_v3$median.visit.temperature.C)
+model2.2 <- lmer(median.visit.temperature.C ~ scaled.Avg.temp.C + scaled.Daylength.Hr + (1|TransponderHexCode) + (1|date), data = thermal_bird_forage_v3, na.action = na.exclude)
+summary(model2.2)
+hist(resid(model2.2))
+qqnorm(resid(model2.2))
+qqline(resid(model2.2))
+
+#### Models with spurious data and two individuals excluded #####
+
+hist(thermal_bird_forage_with_sp_v3$IVI)
+model1.2_with_sp <- lmer(IVI ~ scaled.Avg.temp.C + scaled.Daylength.Hr + (1|TransponderHexCode) + (1|date), data = thermal_bird_forage_with_sp_v3, na.action = na.exclude)
+summary(model1.2_with_sp)
+hist(resid(model1.2_with_sp))
+qqnorm(resid(model1.2_with_sp))
+qqline(resid(model1.2_with_sp))
+
+
+hist(thermal_bird_forage_with_sp_v3$median.visit.temperature.C)
+model2.2_with_sp <- lmer(median.visit.temperature.C ~ scaled.Avg.temp.C + scaled.Daylength.Hr + (1|TransponderHexCode) + (1|date), data = thermal_bird_forage_with_sp_v3, na.action = na.exclude)
+summary(model2.2_with_sp)
+hist(resid(model2.2_with_sp))
+qqnorm(resid(model2.2_with_sp))
+qqline(resid(model2.2_with_sp))
+```
+
+##### Bivariate models
+```{r}
+# Setting prior and alternative prior
+prior = list(R = list(V = diag(2), nu = 0.002),
+             G = list(G1 = list(V = diag(2), nu = 2,
+                      alpha.mu = rep(0,2),
+                      alpha.V = diag(25^2,2,2))))
+
+prior2 = list(R = list(V = diag(2), nu = 0.002),
+              G = list(G1 = list(V = diag(2), nu = 2)))
+
+#### First running without sex data, with all individuals ####
+# Model specification follows the Houslay et al. 2017 MCMCglmm tutorial.
+MCMC_model1 <- MCMCglmm(cbind(median.visit.temperature.C, IVI) ~ trait-1 + trait:scaled.Avg.temp.C +
+trait:scaled.Daylength.Hr,
+random =~ us(trait):TransponderHexCode,
+rcov =~ us(trait):units,
+family = c("gaussian","gaussian"),
+prior = prior,
+nitt=110000,
+burnin=10000,
+thin=100,
+verbose = TRUE,
+pr = TRUE, # pr to allow for individual estimates to be generated. Set to false for model checking.
+data = as.data.frame(thermal_bird_forage_v2))
+
+# model checking 
+graphics.off()
+par("mar")
+par(mar=c(1,1,1,1))
+plot(MCMC_model1)
+
+# model summary
+summary(MCMC_model1)
+
+# adjusted repeatability body temperature
+prop.visit.temp <- MCMC_model1$VCV[,"traitmedian.visit.temperature.C:traitmedian.visit.temperature.C.TransponderHexCode"]/(MCMC_model1$VCV[,"traitmedian.visit.temperature.C:traitmedian.visit.temperature.C.TransponderHexCode"] + MCMC_model1$VCV[,"traitmedian.visit.temperature.C:traitmedian.visit.temperature.C.units"])
+mean(prop.visit.temp)
+HPDinterval(prop.visit.temp)
+
+# adjusted repeatability IVI
+prop.IVI <- MCMC_model1$VCV[,"traitIVI:traitIVI.TransponderHexCode"]/(MCMC_model1$VCV[,"traitIVI:traitIVI.TransponderHexCode"] + MCMC_model1$VCV[,"traitIVI:traitIVI.units"])
+mean(prop.IVI)
+HPDinterval(prop.IVI)
+# low repeatabiltiy of IVI means can't look at among individual correlation
+
+# within-individual correlation
+within_cor <- MCMC_model1$VCV[,"traitmedian.visit.temperature.C:traitIVI.units"]/(sqrt(MCMC_model1$VCV[,"traitmedian.visit.temperature.C:traitmedian.visit.temperature.C.units"])*sqrt(MCMC_model1$VCV[,"traitIVI:traitIVI.units"]))
+mean(within_cor)
+HPDinterval(within_cor)
+
+#### Run without the two individuals whose temperature data look quite different compared to the rest. ####
+MCMC_model2 <- MCMCglmm(cbind(median.visit.temperature.C, IVI) ~ trait-1 + trait:scaled.Avg.temp.C +
+trait:scaled.Daylength.Hr,
+random =~ us(trait):TransponderHexCode,
+rcov =~ us(trait):units,
+family = c("gaussian","gaussian"),
+prior = prior,
+nitt=110000,
+burnin=10000,
+thin=100,
+verbose = TRUE,
+data = as.data.frame(thermal_bird_forage_v3))
+
+# model checking
+graphics.off()
+par("mar")
+par(mar=c(1,1,1,1))
+plot(MCMC_model2)
+
+# model summary
+summary(MCMC_model2)
+
+# adjusted repeatability body temp
+prop.visit.temp2 <- MCMC_model2$VCV[,"traitmedian.visit.temperature.C:traitmedian.visit.temperature.C.TransponderHexCode"]/(MCMC_model2$VCV[,"traitmedian.visit.temperature.C:traitmedian.visit.temperature.C.TransponderHexCode"] + MCMC_model2$VCV[,"traitmedian.visit.temperature.C:traitmedian.visit.temperature.C.units"])
+mean(prop.visit.temp2)
+HPDinterval(prop.visit.temp2)
+
+# adjusted repeatability IVI
+prop.IVI2 <- MCMC_model2$VCV[,"traitIVI:traitIVI.TransponderHexCode"]/(MCMC_model2$VCV[,"traitIVI:traitIVI.TransponderHexCode"] + MCMC_model2$VCV[,"traitIVI:traitIVI.units"])
+mean(prop.IVI2)
+HPDinterval(prop.IVI2)
+
+# within-individual correlation
+within_cor2 <- MCMC_model2$VCV[,"traitmedian.visit.temperature.C:traitIVI.units"]/(sqrt(MCMC_model2$VCV[,"traitmedian.visit.temperature.C:traitmedian.visit.temperature.C.units"])*sqrt(MCMC_model2$VCV[,"traitIVI:traitIVI.units"]))
+mean(within_cor2)
+HPDinterval(within_cor2)
+
+#### Then run with the spurious data to see whether removing had an effect on the results ####
+MCMC_model3 <- MCMCglmm(cbind(median.visit.temperature.C, IVI) ~ trait-1 + trait:scaled.Avg.temp.C +
+trait:scaled.Daylength.Hr,
+random =~ us(trait):TransponderHexCode,
+rcov =~ us(trait):units,
+family = c("gaussian","gaussian"),
+prior = prior,
+nitt=110000,
+burnin=10000,
+thin=100,
+verbose = TRUE,
+data = as.data.frame(thermal_bird_forage_with_sp_v2))
+
+# model checking
+graphics.off()
+par("mar")
+par(mar=c(1,1,1,1))
+plot(MCMC_model3)
+
+# model summary 
+summary(MCMC_model3)
+
+# adjusted repeatability body temperature
+prop.visit.temp3 <- MCMC_model3$VCV[,"traitmedian.visit.temperature.C:traitmedian.visit.temperature.C.TransponderHexCode"]/(MCMC_model3$VCV[,"traitmedian.visit.temperature.C:traitmedian.visit.temperature.C.TransponderHexCode"] + MCMC_model3$VCV[,"traitmedian.visit.temperature.C:traitmedian.visit.temperature.C.units"])
+mean(prop.visit.temp3)
+HPDinterval(prop.visit.temp3)
+
+# adjusted repeatability IVI
+prop.IVI3 <- MCMC_model3$VCV[,"traitIVI:traitIVI.TransponderHexCode"]/(MCMC_model3$VCV[,"traitIVI:traitIVI.TransponderHexCode"] + MCMC_model3$VCV[,"traitIVI:traitIVI.units"])
+mean(prop.IVI3)
+HPDinterval(prop.IVI3)
+
+# within-individual correlation
+within_cor3 <- MCMC_model3$VCV[,"traitmedian.visit.temperature.C:traitIVI.units"]/(sqrt(MCMC_model3$VCV[,"traitmedian.visit.temperature.C:traitmedian.visit.temperature.C.units"])*sqrt(MCMC_model3$VCV[,"traitIVI:traitIVI.units"]))
+mean(within_cor3)
+HPDinterval(within_cor3)
+
+##### Trying different prior #####
+
+#### Model with all individuals, no spurious data
+MCMC_model1_prior2 <- MCMCglmm(cbind(median.visit.temperature.C, IVI) ~ trait-1 + trait:scaled.Avg.temp.C +
+trait:scaled.Daylength.Hr,
+random =~ us(trait):TransponderHexCode,
+rcov =~ us(trait):units,
+family = c("gaussian","gaussian"),
+prior = prior2,
+nitt=110000,
+burnin=10000,
+thin=100,
+verbose = TRUE,
+data = as.data.frame(thermal_bird_forage_v2))
+
+# model checking
+graphics.off()
+par("mar")
+par(mar=c(1,1,1,1))
+plot(MCMC_model1_prior2)
+
+# model summary 
+summary(MCMC_model1_prior2)
+
+# within-individual correlation
+within_cor.2 <- MCMC_model1_prior2$VCV[,"traitmedian.visit.temperature.C:traitIVI.units"]/(sqrt(MCMC_model1_prior2$VCV[,"traitmedian.visit.temperature.C:traitmedian.visit.temperature.C.units"])*sqrt(MCMC_model1_prior2$VCV[,"traitIVI:traitIVI.units"]))
+mean(within_cor.2)
+HPDinterval(within_cor.2)
+
+##############
+# Need to run the code below to confirm priors don't change results in these models. 
+##############
+
+#### Model without the two individuals whose temperature data look quite different compared to the rest.
+MCMC_model2_prior2 <- MCMCglmm(cbind(median.visit.temperature.C, IVI) ~ trait-1 + trait:scaled.Avg.temp.C +
+trait:scaled.Daylength.Hr,
+random =~ us(trait):TransponderHexCode,
+rcov =~ us(trait):units,
+family = c("gaussian","gaussian"),
+prior = prior2,
+nitt=110000,
+burnin=10000,
+thin=100,
+verbose = TRUE,
+data = as.data.frame(thermal_bird_forage_v3))
+
+# model checking
+graphics.off()
+par("mar")
+par(mar=c(1,1,1,1))
+plot(MCMC_model2_prior2)
+
+# model summary 
+summary(MCMC_model2_prior2)
+
+# within-individual correlation
+within_cor2.2 <- MCMC_model2_prior2$VCV[,"traitmedian.visit.temperature.C:traitIVI.units"]/(sqrt(MCMC_model2_prior2$VCV[,"traitmedian.visit.temperature.C:traitmedian.visit.temperature.C.units"])*sqrt(MCMC_model2_prior2$VCV[,"traitIVI:traitIVI.units"]))
+mean(within_cor2.2)
+HPDinterval(within_cor2.2)
+
+#### Model with the spurious data to see whether removing had an effect on the results ####
+MCMC_model3_prior2 <- MCMCglmm(cbind(median.visit.temperature.C, IVI) ~ trait-1 + trait:scaled.Avg.temp.C +
+trait:scaled.Daylength.Hr,
+random =~ us(trait):TransponderHexCode,
+rcov =~ us(trait):units,
+family = c("gaussian","gaussian"),
+prior = prior2,
+nitt=110000,
+burnin=10000,
+thin=100,
+verbose = TRUE,
+data = as.data.frame(thermal_bird_forage_with_sp_v2))
+
+# model checking
+graphics.off()
+par("mar")
+par(mar=c(1,1,1,1))
+plot(MCMC_model3_prior2)
+
+# model summary 
+summary(MCMC_model3_prior2)
+
+# within-individual correlation
+within_cor3.2 <- MCMC_model3_prior2$VCV[,"traitmedian.visit.temperature.C:traitIVI.units"]/(sqrt(MCMC_model3_prior2$VCV[,"traitmedian.visit.temperature.C:traitmedian.visit.temperature.C.units"])*sqrt(MCMC_model3_prior2$VCV[,"traitIVI:traitIVI.units"]))
+mean(within_cor3.2)
+HPDinterval(within_cor3.2)
+```
+
+### Post-hoc analyses
+
+Given low repeatability of IVI doesn't make sense to look at the presence of among-individual correlations between IVI and body temperature. Let's look at summarizing data at the level of a day and compare mean Tb with total feeder visits (another proxy for foraging activity/rate)
+
+#### Making datasets with mean body temperature and total number of foraging visits.
+```{r}
+daily_thermal_bird_forage <- thermal_bird_forage_v2[, .(mean.body.temperature = mean(median.visit.temperature.C, na.rm=TRUE), total.feeder.visits = .N), by= c("date", "TransponderHexCode", "SexConclusion", "Avg.temp.C", "Daylength.Hr", "scaled.Avg.temp.C", "scaled.Daylength.Hr")]
+
+daily_thermal_bird_forage_v2 <- thermal_bird_forage_v3[, .(mean.body.temperature = mean(median.visit.temperature.C, na.rm=TRUE), total.feeder.visits = .N), by= c("date", "TransponderHexCode", "SexConclusion", "Avg.temp.C", "Daylength.Hr", "scaled.Avg.temp.C", "scaled.Daylength.Hr")]
+
+daily_thermal_bird_forage_with_sp <- thermal_bird_forage_with_sp_v2[, .(mean.body.temperature = mean(median.visit.temperature.C, na.rm=TRUE), total.feeder.visits = .N), by= c("date", "TransponderHexCode", "SexConclusion", "Avg.temp.C", "Daylength.Hr", "scaled.Avg.temp.C", "scaled.Daylength.Hr")]
+```
+
+#### Univariate models
+```{r}
+# Check distributions and try univariate models
+# All individuals, spurious data excluded.
+hist(daily_thermal_bird_forage$mean.body.temperature)
+hist(daily_thermal_bird_forage$total.feeder.visits)
+
+model3 <- lmer(mean.body.temperature ~ scaled.Avg.temp.C+scaled.Daylength.Hr+(1|TransponderHexCode), data= daily_thermal_bird_forage)
+summary(model3)
+plot(model3)
+
+
+model4 <- lmer(total.feeder.visits ~ scaled.Avg.temp.C+scaled.Daylength.Hr+(1|TransponderHexCode), data= daily_thermal_bird_forage)
+summary(model4)
+plot(model4)
+
+# Two individuals removed, spurious data excluded 
+model3.2<- lmer(mean.body.temperature ~ scaled.Avg.temp.C+scaled.Daylength.Hr+(1|TransponderHexCode), data= daily_thermal_bird_forage_v2)
+summary(model3.2)
+plot(model3.2)
+
+
+model4.2 <- lmer(total.feeder.visits ~ scaled.Avg.temp.C+scaled.Daylength.Hr+(1|TransponderHexCode), data= daily_thermal_bird_forage_v2)
+summary(model4.2)
+plot(model4.2)
+
+# Spurious data included 
+model3_with_sp <- lmer(mean.body.temperature ~ scaled.Avg.temp.C+scaled.Daylength.Hr+(1|TransponderHexCode), data= daily_thermal_bird_forage_with_sp)
+summary(model3_with_sp)
+plot(model3_with_sp)
+
+
+model4_with_sp <- lmer(total.feeder.visits ~ scaled.Avg.temp.C+scaled.Daylength.Hr+(1|TransponderHexCode), data= daily_thermal_bird_forage_with_sp)
+summary(model4_with_sp)
+plot(model4_with_sp)
+
+```
+
+#### Bivariate models
+```{r}
+# Setting prior and alternative prior
+prior = list(R = list(V = diag(2), nu = 0.002),
+             G = list(G1 = list(V = diag(2), nu = 2,
+                                alpha.mu = rep(0,2),
+                                alpha.V = diag(25^2,2,2))))
+
+prior2 = list(R = list(V = diag(2), nu = 0.002),
+              G = list(G1 = list(V = diag(2), nu = 2)))
+
+#### All individuals, spurious data excluded ####
+MCMC_model4 <- MCMCglmm(cbind(mean.body.temperature,total.feeder.visits) ~ trait-1+
+                            trait:scaled.Avg.temp.C +
+                            trait:scaled.Daylength.Hr,
+                          random =~ us(trait):TransponderHexCode,
+                          rcov =~ us(trait):units,
+                          family = c("gaussian","gaussian"),
+                          prior = prior,
+                          nitt=110000,
+                          burnin=10000,
+                          thin=100,
+                          verbose = TRUE,
+                          pr = TRUE, # pr to allow for individual estimates to be generated. Set to false for model checking.
+                          data = as.data.frame(daily_thermal_bird_forage))
+# model checking
+graphics.off()
+par("mar")
+par(mar=c(1,1,1,1))
+plot(MCMC_model4)
+
+# model summary
+summary(MCMC_model4)
+
+# adjusted repeatability body temp
+prop.visit.temp4 <- MCMC_model4$VCV[,"traitmean.body.temperature:traitmean.body.temperature.TransponderHexCode"]/(MCMC_model4$VCV[,"traitmean.body.temperature:traitmean.body.temperature.TransponderHexCode"] + MCMC_model4$VCV[,"traitmean.body.temperature:traitmean.body.temperature.units"])
+mean(prop.visit.temp4)
+HPDinterval(prop.visit.temp4)
+
+# adjusted repeatability total feeder visits
+prop.feeder.visits <- MCMC_model4$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.TransponderHexCode"]/(MCMC_model4$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.TransponderHexCode"] + MCMC_model4$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.units"])
+mean(prop.feeder.visits)
+HPDinterval(prop.feeder.visits)
+
+# among-individual correlations
+among_cor_daily_Tb_visits <- MCMC_model4$VCV[,"traitmean.body.temperature:traittotal.feeder.visits.TransponderHexCode"]/
+(sqrt(MCMC_model4$VCV[,"traitmean.body.temperature:traitmean.body.temperature.TransponderHexCode"])*
+sqrt(MCMC_model4$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.TransponderHexCode"]))
+mean(among_cor_daily_Tb_visits)
+HPDinterval(among_cor_daily_Tb_visits)
+
+# Bayesian p-value
+counts<-ifelse(among_cor_daily_Tb_visits>0,1,0)
+sum(counts)
+counts2<-ifelse(among_cor_daily_Tb_visits<0,1,0)
+sum(counts2)
+sum(counts2)/(sum(counts)+sum(counts2))
+
+# within-individual correlations
+within_cor_daily_Tb_visits <- MCMC_model4$VCV[,"traitmean.body.temperature:traittotal.feeder.visits.units"]/
+(sqrt(MCMC_model4$VCV[,"traitmean.body.temperature:traitmean.body.temperature.units"])*
+sqrt(MCMC_model4$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.units"]))
+mean(within_cor_daily_Tb_visits)
+HPDinterval(within_cor_daily_Tb_visits)
+
+# Bayesian p-value
+counts<-ifelse(within_cor_daily_Tb_visits>0,1,0)
+sum(counts)
+counts2<-ifelse(within_cor_daily_Tb_visits<0,1,0)
+sum(counts2)
+sum(counts2)/(sum(counts)+sum(counts2))
+
+#### Run without the two individuals whose temperature data look quite different compared to the rest ####
+MCMC_model5 <- MCMCglmm(cbind(mean.body.temperature,total.feeder.visits) ~ trait-1+
+                            trait:scaled.Avg.temp.C +
+                            trait:scaled.Daylength.Hr,
+                          random =~ us(trait):TransponderHexCode,
+                          rcov =~ us(trait):units,
+                          family = c("gaussian","gaussian"),
+                          prior = prior,
+                          nitt=110000,
+                          burnin=10000,
+                          thin=100,
+                          verbose = TRUE,
+                          data = as.data.frame(daily_thermal_bird_forage_v2))
+#model checking
+graphics.off()
+par("mar")
+par(mar=c(1,1,1,1))
+plot(MCMC_model5)
+
+#model summary
+summary(MCMC_model5)
+
+# adjusted repeatability body temp
+prop.visit.temp5 <- MCMC_model5$VCV[,"traitmean.body.temperature:traitmean.body.temperature.TransponderHexCode"]/(MCMC_model5$VCV[,"traitmean.body.temperature:traitmean.body.temperature.TransponderHexCode"] + MCMC_model5$VCV[,"traitmean.body.temperature:traitmean.body.temperature.units"])
+mean(prop.visit.temp5)
+HPDinterval(prop.visit.temp5)
+
+# adjusted repeatability total feeder visits
+prop.feeder.visits2 <- MCMC_model5$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.TransponderHexCode"]/(MCMC_model5$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.TransponderHexCode"] + MCMC_model5$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.units"])
+mean(prop.feeder.visits2)
+HPDinterval(prop.feeder.visits2)
+
+#among-individual correlation
+among_cor_daily_Tb_visits2 <- MCMC_model5$VCV[,"traitmean.body.temperature:traittotal.feeder.visits.TransponderHexCode"]/
+(sqrt(MCMC_model5$VCV[,"traitmean.body.temperature:traitmean.body.temperature.TransponderHexCode"])*
+sqrt(MCMC_model5$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.TransponderHexCode"]))
+mean(among_cor_daily_Tb_visits2)
+HPDinterval(among_cor_daily_Tb_visits2)
+
+#within-individual correlation
+within_cor_daily_Tb_visits2 <- MCMC_model5$VCV[,"traitmean.body.temperature:traittotal.feeder.visits.units"]/
+(sqrt(MCMC_model5$VCV[,"traitmean.body.temperature:traitmean.body.temperature.units"])*
+sqrt(MCMC_model5$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.units"]))
+mean(within_cor_daily_Tb_visits2)
+HPDinterval(within_cor_daily_Tb_visits2)
+
+#### Run with spurious data ####
+MCMC_model6 <- MCMCglmm(cbind(mean.body.temperature,total.feeder.visits) ~ trait-1+
+                            trait:scaled.Avg.temp.C +
+                            trait:scaled.Daylength.Hr,
+                          random =~ us(trait):TransponderHexCode,
+                          rcov =~ us(trait):units,
+                          family = c("gaussian","gaussian"),
+                          prior = prior,
+                          nitt=110000,
+                          burnin=10000,
+                          thin=100,
+                          verbose = TRUE,
+                          data = as.data.frame(daily_thermal_bird_forage_with_sp))
+
+# model checking
+graphics.off()
+par("mar")
+par(mar=c(1,1,1,1))
+plot(MCMC_model6)
+
+# model summary
+summary(MCMC_model6)
+
+# adjusted repeatability body temp
+prop.visit.temp6 <- MCMC_model6$VCV[,"traitmean.body.temperature:traitmean.body.temperature.TransponderHexCode"]/(MCMC_model6$VCV[,"traitmean.body.temperature:traitmean.body.temperature.TransponderHexCode"] + MCMC_model6$VCV[,"traitmean.body.temperature:traitmean.body.temperature.units"])
+mean(prop.visit.temp6)
+HPDinterval(prop.visit.temp6)
+
+# adjusted repeatability total feeding visits
+prop.feeder.visits3 <- MCMC_model6$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.TransponderHexCode"]/(MCMC_model6$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.TransponderHexCode"] + MCMC_model6$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.units"])
+mean(prop.feeder.visits3)
+HPDinterval(prop.feeder.visits3)
+
+# among-individual correlation
+among_cor_daily_Tb_visits3 <- MCMC_model6$VCV[,"traitmean.body.temperature:traittotal.feeder.visits.TransponderHexCode"]/
+(sqrt(MCMC_model6$VCV[,"traitmean.body.temperature:traitmean.body.temperature.TransponderHexCode"])*
+sqrt(MCMC_model6$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.TransponderHexCode"]))
+mean(among_cor_daily_Tb_visits3)
+HPDinterval(among_cor_daily_Tb_visits3)
+
+# within-individual correlation
+within_cor_daily_Tb_visits3 <- MCMC_model6$VCV[,"traitmean.body.temperature:traittotal.feeder.visits.units"]/
+(sqrt(MCMC_model6$VCV[,"traitmean.body.temperature:traitmean.body.temperature.units"])*
+sqrt(MCMC_model6$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.units"]))
+mean(within_cor_daily_Tb_visits3)
+HPDinterval(within_cor_daily_Tb_visits3)
+
+
+#### Trying different priors ####
+MCMC_model4_prior2 <- MCMCglmm(cbind(mean.body.temperature,total.feeder.visits) ~ trait-1+
+                            trait:scaled.Avg.temp.C +
+                            trait:scaled.Daylength.Hr,
+                          random =~ us(trait):TransponderHexCode,
+                          rcov =~ us(trait):units,
+                          family = c("gaussian","gaussian"),
+                          prior = prior2,
+                          nitt=110000,
+                          burnin=10000,
+                          thin=100,
+                          verbose = TRUE,
+                          data = as.data.frame(daily_thermal_bird_forage))
+
+# model checking 
+graphics.off()
+par("mar")
+par(mar=c(1,1,1,1))
+plot(MCMC_model4_prior2)
+
+# model summary
+summary(MCMC_model4_prior2)
+
+# among-individual correlations
+among_cor_daily_Tb_visits2 <- MCMC_model4_prior2$VCV[,"traitmean.body.temperature:traittotal.feeder.visits.TransponderHexCode"]/
+(sqrt(MCMC_model4_prior2$VCV[,"traitmean.body.temperature:traitmean.body.temperature.TransponderHexCode"])*
+sqrt(MCMC_model4_prior2$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.TransponderHexCode"]))
+mean(among_cor_daily_Tb_visits2)
+HPDinterval(among_cor_daily_Tb_visits2)
+
+# within-individual correlations
+within_cor_daily_Tb_visits.2 <- MCMC_model4_prior2$VCV[,"traitmean.body.temperature:traittotal.feeder.visits.units"]/
+(sqrt(MCMC_model4_prior2$VCV[,"traitmean.body.temperature:traitmean.body.temperature.units"])*
+sqrt(MCMC_model4_prior2$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.units"]))
+mean(within_cor_daily_Tb_visits.2)
+HPDinterval(within_cor_daily_Tb_visits.2)
+
+##############
+# Need to run the code below to confirm priors don't change results in these models. 
+##############
+
+#### Run without the two individuals whose temperature data look quite different compared to the rest ####
+MCMC_model5_prior2 <- MCMCglmm(cbind(mean.body.temperature,total.feeder.visits) ~ trait-1+
+                            trait:scaled.Avg.temp.C +
+                            trait:scaled.Daylength.Hr,
+                          random =~ us(trait):TransponderHexCode,
+                          rcov =~ us(trait):units,
+                          family = c("gaussian","gaussian"),
+                          prior = prior2,
+                          nitt=110000,
+                          burnin=10000,
+                          thin=100,
+                          verbose = TRUE,
+                          data = as.data.frame(daily_thermal_bird_forage_v2))
+
+# model checking 
+graphics.off()
+par("mar")
+par(mar=c(1,1,1,1))
+plot(MCMC_model5_prior2)
+
+# model summary
+summary(MCMC_model5_prior2)
+
+# among-individual correlations
+among_cor_daily_Tb_visits2.2 <- MCMC_model5_prior2$VCV[,"traitmean.body.temperature:traittotal.feeder.visits.TransponderHexCode"]/
+(sqrt(MCMC_model5_prior2$VCV[,"traitmean.body.temperature:traitmean.body.temperature.TransponderHexCode"])*
+sqrt(MCMC_model5_prior2$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.TransponderHexCode"]))
+mean(among_cor_daily_Tb_visits2.2)
+HPDinterval(among_cor_daily_Tb_visits2.2)
+
+# within-individual correlations
+within_cor_daily_Tb_visits2.2 <- MCMC_model5_prior2$VCV[,"traitmean.body.temperature:traittotal.feeder.visits.units"]/
+(sqrt(MCMC_model5_prior2$VCV[,"traitmean.body.temperature:traitmean.body.temperature.units"])*
+sqrt(MCMC_model5_prior2$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.units"]))
+mean(within_cor_daily_Tb_visits2.2)
+HPDinterval(within_cor_daily_Tb_visits2.2)
+
+MCMC_model6_prior2 <- MCMCglmm(cbind(mean.body.temperature,total.feeder.visits) ~ trait-1+
+                            trait:scaled.Avg.temp.C +
+                            trait:scaled.Daylength.Hr,
+                          random =~ us(trait):TransponderHexCode,
+                          rcov =~ us(trait):units,
+                          family = c("gaussian","gaussian"),
+                          prior = prior2,
+                          nitt=110000,
+                          burnin=10000,
+                          thin=100,
+                          verbose = TRUE,
+                          data = as.data.frame(daily_thermal_bird_forage_with_sp))
+
+# model checking 
+graphics.off()
+par("mar")
+par(mar=c(1,1,1,1))
+plot(MCMC_model6_prior2)
+
+# model summary
+summary(MCMC_model6_prior2)
+
+# among-individual correlations
+among_cor_daily_Tb_visits3.2 <- MCMC_model6_prior2$VCV[,"traitmean.body.temperature:traittotal.feeder.visits.TransponderHexCode"]/
+(sqrt(MCMC_model6_prior2$VCV[,"traitmean.body.temperature:traitmean.body.temperature.TransponderHexCode"])*
+sqrt(MCMC_model6_prior2$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.TransponderHexCode"]))
+mean(among_cor_daily_Tb_visits3.2)
+HPDinterval(among_cor_daily_Tb_visits3.2)
+
+# within-individual correlations
+within_cor_daily_Tb_visits3.2 <- MCMC_model6_prior2$VCV[,"traitmean.body.temperature:traittotal.feeder.visits.units"]/
+(sqrt(MCMC_model6_prior2$VCV[,"traitmean.body.temperature:traitmean.body.temperature.units"])*
+sqrt(MCMC_model6_prior2$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.units"]))
+mean(within_cor_daily_Tb_visits3.2)
+HPDinterval(within_cor_daily_Tb_visits3.2)
+
+```
+
+#### Testing for sex effects 
+```{r}
+#### Daily mean body temperature and daily feeder visits ####
+# All individuals, spurious data excluded
+
+# Coding sex as a factor
+daily_thermal_bird_forage$SexConclusion <- as.factor(daily_thermal_bird_forage$SexConclusion)
+# remove individuals with unknown sex 
+daily_thermal_bird_forage_v3 <- subset(daily_thermal_bird_forage, SexConclusion != "Unknown")
+daily_thermal_bird_forage_v3$SexConclusion <- factor(daily_thermal_bird_forage_v3$SexConclusion) # removing unknown category
+
+MCMC_model7 <- MCMCglmm(cbind(mean.body.temperature,total.feeder.visits) ~ trait-1 +
+                            trait:scaled.Avg.temp.C +
+                            trait:scaled.Daylength.Hr + trait:SexConclusion,
+                          random =~ us(trait):TransponderHexCode,
+                          rcov =~ us(trait):units,
+                          family = c("gaussian","gaussian"),
+                          prior = prior,
+                          nitt=110000,
+                          burnin=10000,
+                          thin=100,
+                          verbose = TRUE,
+                          data = as.data.frame(daily_thermal_bird_forage_v3))
+
+# model checking 
+graphics.off()
+par("mar")
+par(mar=c(1,1,1,1))
+plot(MCMC_model7)
+
+# model summary
+summary(MCMC_model7)
+
+# Bayesian p-value
+Effect_MaleTb <- MCMC_model7$Sol[,7]
+counts<-ifelse(Effect_MaleTb>0,1,0)
+sum(counts)
+counts2<-ifelse(Effect_MaleTb<0,1,0)
+sum(counts2)
+sum(counts)/(sum(counts)+sum(counts2))
+
+# Bayesian p-value
+Effect_MaleVisits <- MCMC_model7$Sol[,8]
+counts<-ifelse(Effect_MaleVisits>0,1,0)
+sum(counts)
+counts2<-ifelse(Effect_MaleVisits<0,1,0)
+sum(counts2)
+sum(counts2)/(sum(counts)+sum(counts2))
+
+# adjusted repeatability body temp
+prop.visit.temp7 <- MCMC_model7$VCV[,"traitmean.body.temperature:traitmean.body.temperature.TransponderHexCode"]/(MCMC_model7$VCV[,"traitmean.body.temperature:traitmean.body.temperature.TransponderHexCode"] + MCMC_model7$VCV[,"traitmean.body.temperature:traitmean.body.temperature.units"])
+mean(prop.visit.temp7)
+HPDinterval(prop.visit.temp7)
+
+# adjusted repeatability total feeding visits
+prop.feeder.visits4 <- MCMC_model7$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.TransponderHexCode"]/(MCMC_model7$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.TransponderHexCode"] + MCMC_model7$VCV[,"traittotal.feeder.visits:traittotal.feeder.visits.units"])
+mean(prop.feeder.visits4)
+HPDinterval(prop.feeder.visits4)
+
+#### Visit body temperature and IVI ####
+
+# All individuals, spurious data excluded
+# Coding sex as a factor
+thermal_bird_forage_v2$SexConclusion <- as.factor(thermal_bird_forage_v2$SexConclusion)
+# Remove individuals with unknown sex 
+thermal_bird_forage_v4 <- subset(thermal_bird_forage_v2, SexConclusion != "Unknown")
+thermal_bird_forage_v4$SexConclusion <- factor(thermal_bird_forage_v4$SexConclusion) # removing unknown category
+
+MCMC_model8 <- MCMCglmm(cbind(median.visit.temperature.C,IVI) ~ trait-1 +
+                            trait:scaled.Avg.temp.C +
+                            trait:scaled.Daylength.Hr + trait:SexConclusion,
+                          random =~ us(trait):TransponderHexCode,
+                          rcov =~ us(trait):units,
+                          family = c("gaussian","gaussian"),
+                          prior = prior,
+                          nitt=110000,
+                          burnin=10000,
+                          thin=100,
+                          verbose = TRUE,
+                          data = as.data.frame(thermal_bird_forage_v4))
+
+# model checking 
+graphics.off()
+par("mar")
+par(mar=c(1,1,1,1))
+plot(MCMC_model8)
+
+# model summary
+summary(MCMC_model8)
+
+Effect_MaleTb2 <- MCMC_model8$Sol[,7]
+counts<-ifelse(Effect_MaleTb2>0,1,0)
+sum(counts)
+counts2<-ifelse(Effect_MaleTb2<0,1,0)
+sum(counts2)
+sum(counts)/(sum(counts)+sum(counts2))
+
+Effect_MaleIVI <- MCMC_model8$Sol[,8]
+counts<-ifelse(Effect_MaleIVI>0,1,0)
+sum(counts)
+counts2<-ifelse(Effect_MaleIVI<0,1,0)
+sum(counts2)
+sum(counts)/(sum(counts)+sum(counts2))
+
+# adjusted repeatability body temp
+prop.visit.temp8 <- MCMC_model8$VCV[,"traitmedian.visit.temperature.C:traitmedian.visit.temperature.C.TransponderHexCode"]/(MCMC_model8$VCV[,"traitmedian.visit.temperature.C:traitmedian.visit.temperature.C.TransponderHexCode"] + MCMC_model8$VCV[,"traitmedian.visit.temperature.C:traitmedian.visit.temperature.C.units"])
+mean(prop.visit.temp8)
+HPDinterval(prop.visit.temp8)
+
+# adjusted repeatability IVI
+prop.IVI4 <- MCMC_model8$VCV[,"traitIVI:traitIVI.TransponderHexCode"]/(MCMC_model8$VCV[,"traitIVI:traitIVI.TransponderHexCode"] + MCMC_model8$VCV[,"traitIVI:traitIVI.units"])
+mean(prop.IVI4)
+HPDinterval(prop.IVI4)
+
+#### Sex effects models with different prior ####
+
+# Daily mean body temperature and daily feeder visits
+MCMC_model7_prior2 <- MCMCglmm(cbind(mean.body.temperature,total.feeder.visits) ~ trait-1 +
+                            trait:scaled.Avg.temp.C +
+                            trait:scaled.Daylength.Hr + trait:SexConclusion,
+                          random =~ us(trait):TransponderHexCode,
+                          rcov =~ us(trait):units,
+                          family = c("gaussian","gaussian"),
+                          prior = prior2,
+                          nitt=110000,
+                          burnin=10000,
+                          thin=100,
+                          verbose = TRUE,
+                          data = as.data.frame(daily_thermal_bird_forage_v3))
+# model checking
+graphics.off()
+par("mar")
+par(mar=c(1,1,1,1))
+plot(MCMC_model7_prior2)
+
+# model summary
+summary(MCMC_model7_prior2)
+
+# Visit body temperature and IVI 
+MCMC_model8_prior2 <- MCMCglmm(cbind(median.visit.temperature.C,IVI) ~ trait-1 +
+                            trait:scaled.Avg.temp.C +
+                            trait:scaled.Daylength.Hr + trait:SexConclusion,
+                          random =~ us(trait):TransponderHexCode,
+                          rcov =~ us(trait):units,
+                          family = c("gaussian","gaussian"),
+                          prior = prior,
+                          nitt=110000,
+                          burnin=10000,
+                          thin=100,
+                          verbose = TRUE,
+                          data = as.data.frame(thermal_bird_forage_v4))
+# model checking
+graphics.off()
+par("mar")
+par(mar=c(1,1,1,1))
+plot(MCMC_model8_prior2)
+
+# model summary
+summary(MCMC_model8_prior2)
+
+```
+
+### Figures presented in main text.
+
+#### Figure 2. Within individual correlations between IVI and body temperature
+```{r}
+# Plotting with raw data
+# Determine mean and sd for each individual
+Figure2_data <- data.table(thermal_bird_forage_v2)
+
+means.sd <- Figure2_data[, .(mean.visit.Tb = mean(median.visit.temperature.C, na.rm=TRUE), sd.visit.Tb = sd(median.visit.temperature.C, na.rm=TRUE) , mean.IVI = mean(IVI, na.rm=TRUE), sd.IVI = sd(IVI, na.rm=TRUE)), by= c("TransponderHexCode")] 
+
+Figure2_data_v2 <- merge(Figure2_data, means.sd, by = "TransponderHexCode")
+
+# Standardize visit body temperature and IVI
+Figure2_data_v2$centered.visit.Tb <- (Figure2_data_v2$median.visit.temperature.C-Figure2_data_v2$mean.visit.Tb)/Figure2_data_v2$sd.visit.Tb
+
+Figure2_data_v2$centered.IVI <- (Figure2_data_v2$IVI-Figure2_data_v2$mean.IVI)/Figure2_data_v2$sd.IVI
+
+# Subset for plotting (take every 10th data point). Including every data point makes the plot quiet busy but doesn't change interpretation.
+
+sequence <- seq(0, 49965, by = 10)
+Figure2_data_v3 <- Figure2_data_v2 %>%
+  slice(sequence)
+
+#### All data points ####
+# Figure2 <- ggplot(data = Figure2_data_v2, aes(x = centered.visit.Tb, y = centered.IVI))+geom_point()+theme_classic()+xlab(expression("within-individual centered Visit T"[b]))+ylab(expression("within-individual centered IVI"))+theme(text = element_text(size = 16))
+# Figure2
+
+#### Every 10th data point ####
+Figure2.2 <- ggplot(data = Figure2_data_v3, aes(x = centered.visit.Tb, y = centered.IVI))+geom_point()+theme_classic()+xlab(expression("within-individual centered Visit T"[b]))+ylab(expression("within-individual centered IVI"))+theme(text = element_text(size = 16))
+Figure2.2
+
+# ggsave("Figure2.png", Figure2, width = 12, height = 8, dpi = 300, units = "in", device='png')
+ggsave("Figure2.2.png", Figure2.2, width = 12, height = 8, dpi = 300, units = "in", device='png')
+
+```
+
+#### Figure 3. Effect of ambient temperature on IVI, visit body temperature, daily mean body temperature and daily mean ambient temperature.
+```{r}
+## Figure 3ab. Effect of ambient temperature on IVI and visit body temperature 
+# First generate predicted values 
+MCMC_model1_predict <- predict.MCMCglmm(MCMC_model1, interval = "confidence")
+
+MCMC_model1_predict_df <- cbind(thermal_bird_forage_v2,
+fit.visit.Tb = MCMC_model1_predict[1:49965, 1:3],
+fit.IVI = MCMC_model1_predict[49966:99930, 1:3]) 
+
+Figure3a <- ggplot(data = MCMC_model1_predict_df, aes(x = Avg.temp.C, y = median.visit.temperature.C))+geom_point()+theme_classic()+stat_smooth(aes(y = fit.visit.Tb.fit), method = "lm", se = FALSE, col = "red")+stat_smooth(aes(y = fit.visit.Tb.lwr), method = "lm", linetype = 2, se = FALSE, size = 0.75, col = "red")+stat_smooth(aes(y = fit.visit.Tb.upr), method = "lm", linetype = 2, se = FALSE, size = 0.75, col = "red")+ylab(expression("Visit T"[b] ~"(°C)"))+xlab(expression("Daily mean T"[a] ~"(°C)"))+labs(tag = "a")+theme(text = element_text(size = 16))
+Figure3a
+
+Figure3b <- ggplot(data = MCMC_model1_predict_df, aes(x = Avg.temp.C, y = IVI))+geom_point()+theme_classic()+stat_smooth(aes(y = fit.IVI.fit), method = "lm", se = FALSE, col = "red")+stat_smooth(aes(y = fit.IVI.lwr), method = "lm", linetype = 2, se = FALSE, size = 0.75, col = "red")+stat_smooth(aes(y = fit.IVI.upr), method = "lm", linetype = 2, se = FALSE, size = 0.75, col = "red")+ylab(expression("IVI (sec)"))+xlab(expression("Daily mean T"[a] ~"(°C)"))+labs(tag = "b")+theme(text = element_text(size = 16))
+Figure3b
+
+## Figure 3cd. Effect of ambient temperature on mean body temperature and daily feeder visits
+# First generate predicted values 
+MCMC_model4_predict <- predict.MCMCglmm(MCMC_model4, interval = "confidence")
+
+MCMC_model4_predict_df <- cbind(daily_thermal_bird_forage,
+fit.daily.Tb = MCMC_model4_predict[1:718,1:3],
+fit.daily.visits = MCMC_model4_predict[719:1436,1:3])
+
+Figure3c <- ggplot(data = MCMC_model4_predict_df, aes(x = Avg.temp.C, y = mean.body.temperature))+geom_point()+theme_classic()+stat_smooth(aes(y = fit.daily.Tb.fit), method = "lm", se = FALSE, col = "red")+stat_smooth(aes(y = fit.daily.Tb.lwr), method = "lm", linetype = 2, se = FALSE, size = 0.75, col = "red")+stat_smooth(aes(y = fit.daily.Tb.upr), method = "lm", linetype = 2, se = FALSE, size = 0.75, col = "red")+ylab(expression("Daily mean T"[b] ~"(°C)"))+xlab(expression("Daily mean T"[a] ~"(°C)"))+labs(tag = "c")+theme(text = element_text(size = 16))
+Figure3c
+
+Figure3d <- ggplot(data = MCMC_model4_predict_df, aes(x = Avg.temp.C, y = total.feeder.visits))+geom_point()+theme_classic()+stat_smooth(aes(y = fit.daily.visits.fit), method = "lm", se = FALSE, col = "red")+stat_smooth(aes(y = fit.daily.visits.lwr), method = "lm", linetype = 2, se = FALSE, size = 0.75, col = "red")+stat_smooth(aes(y = fit.daily.visits.upr), method = "lm", linetype = 2, se = FALSE, size = 0.75, col = "red")+ylab(expression("Daily feeder visits"))+xlab(expression("Daily mean T"[a] ~"(°C)"))+labs(tag = "d")+theme(text = element_text(size = 16))
+Figure3d
+
+# Combine panels into one figure
+Figure3 <- ggarrange(Figure3a, Figure3b, Figure3c, Figure3d, ncol = 2, nrow = 2)
+Figure3
+ggsave("Figure3.png", Figure3, width = 13, height = 9, dpi = 300, units = "in", device='png')
+
+```
+
+### Summarizing weather/daylength variables, number of unique birds, number of days and number of visits reported in main text. Some code is also in chunks of code above. 
+```{r}
+#### Weather variables ####
+
+# mean average daily ambient temperature
+mean(weather$Avg.temp.C)
+# sd average daily ambient temperature
+sd(weather$Avg.temp.C)
+
+# mean daylength
+mean(weather$Daylength.Hr)
+# sd daylength
+sd(weather$Daylength.Hr)
+
+#### Bird variables ####
+# Number of birds using the feeder
+length(unique(thermal_bird_forage_v2$ThermalHexCode))
+# 20 unique individuals using the feeders
+
+# Number of days the feeder was used by at least 1 bird
+length(unique(thermal_bird_forage_v2$date))
+# 49 unique days 
+
+# Number of days the feeder was visited for each bird
+bird_unique_days <- thermal_bird_forage_v2 %>% 
+  group_by(ThermalHexCode) %>%
+  summarise(unique.days = length(unique(date)))
+
+range(as.numeric(bird_unique_days$unique.days))
+mean(as.numeric(bird_unique_days$unique.days))
+sd(as.numeric(bird_unique_days$unique.days))
+
+# Daily number of feeder visits
+# Mean 
+mean(daily_thermal_bird_forage$total.feeder.visits)
+# SD 
+sd(daily_thermal_bird_forage$total.feeder.visits)
+# Range 
+range(daily_thermal_bird_forage$total.feeder.visits)
+
+# Daily mean body temperature 
+# Mean 
+mean(daily_thermal_bird_forage$mean.body.temperature)
+# SD 
+sd(daily_thermal_bird_forage$mean.body.temperature)
+# Range 
+range(daily_thermal_bird_forage$mean.body.temperature)
+
+# Median visit body temperature
+# Mean 
+mean(thermal_bird_forage_v2$median.visit.temperature.C, na.rm=TRUE)
+# SD 
+sd(thermal_bird_forage_v2$median.visit.temperature.C, na.rm=TRUE)
+# Range 
+range(thermal_bird_forage_v2$median.visit.temperature.C, na.rm=TRUE)
+# Range is you exclude the two individuals with body temperature that were consistently lower than the rest.
+range(thermal_bird_forage_v3$median.visit.temperature.C, na.rm=TRUE)
+```
+
+### Electronic supplementary materials Figures and Tables
+
+#### Electronic supplementary materials Table S3. Reporting days feeder was visited and the length of visits.
+```{r}
+# First need to see days in which the feeder was visited by people i.e for data download or for battery change. Hexidecimal code of tag is 3DD.0077C58F24
+
+tag_3DD.0077C58F24 <- subset(Tb_data, HEX.Tag.ID == "3DD.0077C58F24")
+unique(tag_3DD.0077C58F24$Scan.Date)
+
+# In notes also have a visit on 2023-02-25, will double check to confirm days where Feeder 14 was visited.
+
+# Determine how long people visits to feeders were 
+tag_3DD.0077C58F24$Time.continuous <- as.numeric(as.POSIXct(strptime(tag_3DD.0077C58F24$Scan.Time, format = "%H:%M:%OS")))-as.numeric(as.POSIXct(strptime("0", format = "%S"))) # Convert date to continuous time
+
+tag_3DD.0077C58F24 <- data.table(tag_3DD.0077C58F24)
+tag_3DD.0077C58F24 <- setorder(tag_3DD.0077C58F24, HEX.Tag.ID, Scan.Date, Scan.Time, Time.continuous)
+
+tag_3DD.0077C58F24_v2 <- tag_3DD.0077C58F24[, .(visit.start = data.table::first(Scan.Time), visit.end = data.table::last(Scan.Time), visit.duration = data.table::last(Time.continuous)-data.table::first(Time.continuous)), by= c("Scan.Date")]
+
+# Convert time to minutes
+tag_3DD.0077C58F24_v2$visit.duration.min <- tag_3DD.0077C58F24_v2$visit.duration/60 
+
+# Remove dates no included in study period where data was analyzed
+tag_3DD.0077C58F24_v2 <- subset(tag_3DD.0077C58F24_v2, Scan.Date != "01-10-2023" & Scan.Date != "03-17-2023" & Scan.Date != "03-07-2023")
+
+```
+
+#### Electronic supplementary materials Figure S2: # of unique birds using the feeder by date 
+```{r}
+#### Number of birds by date ####
+### Need to add in data from catching period and prior to adjusting the antenna sensitivity. 
+data_2022_12_12 <- read.csv(file = "feeder_14_download_2022_12_12.csv", header = TRUE)
+data_2023_01_10 <- read.csv(file = "feeder_14_download_2023_01_10.csv", header = TRUE)
+data_2023_01_10_before_video <- read.csv(file = "feeder_14_download_2023_01_10_clearing_before_video.csv", header = TRUE)
+data_2023_01_10_video <- read.csv(file = "feeder_14_download_2023_01_10_videos.csv", header = TRUE)
+
+# Merge these files together along with original data file above
+feeder14 <- rbind(data_2022_12_12, data_2023_01_10, data_2023_01_10_before_video, data_2023_01_10_video, Tb_data)
+
+# Need to remove observer visits (there are two codes - one that was used earlier in the year)
+feeder14 <- subset(feeder14, HEX.Tag.ID != "3D9.20D4817F1C")
+feeder14 <- subset(feeder14, HEX.Tag.ID != "3DD.0077C58F24")
+
+feeder14$VisitDate <- as.Date(feeder14$Scan.Date, format = "%m-%d-%Y") 
+
+feeder14 <- feeder14[,c(15,7)]
+names(feeder14)[2] <- "ThermalHexCode"
+
+# Removing the period in hex.code
+feeder14$ThermalHexCode <- gsub(".", "", as.character(feeder14$ThermalHexCode), fixed=TRUE)
+
+# List of each bird that used the feeder
+uniquebirds_feeder14 <- as.data.frame(unique(as.factor(feeder14$ThermalHexCode))) # Seems like in March 4th there was a tag detected that we never received (spurious tag read?) tag 3D9.20DCE5ED90
+
+# Remove tags that were actually a thermal bird (see above for note)
+feeder14 <- merge(feeder14, thermal_bird_info_v2, by = c("ThermalHexCode"))
+
+feeder14 <- feeder14[,c(2,5)]
+
+# Determine number of unique birds per day
+feeder14 <- data.table(feeder14)
+feeder14_birdvisits <- feeder14[, .(BirdNumbers = length(unique(TransponderHexCode))), by= c("VisitDate")]
+
+# Generate plot
+supp_plot1 <- ggplot(feeder14_birdvisits, aes(VisitDate, BirdNumbers)) + geom_point() + theme_classic() + ylab("Number of birds") + xlab("Date")
+
+# Add lines for dates when antenna sensitivity was adjusted (2023-01-10) and date test of feeders with new desgin started (2023-03-01).
+supp_plot1_v2 <- supp_plot1 + geom_vline(xintercept = as.numeric(as.Date(c("2023-01-10", "2023-03-01"))), linetype = c("dashed", "dotdash"), linewidth = 1.2, col = c("#1E88E5", "#FFA824"))
+
+# Add shaded area for catching. First day was December 4th, last day was January 2nd.
+shade <- as.data.frame(as.Date(c("2022-12-04", "2023-01-02")))
+colnames(shade) <- "VisitDate"
+shade$BirdNumbers <- c(20,0)
+supp_plot1_v3 <- supp_plot1_v2 + geom_rect(data = shade, aes(xmin=min(VisitDate), xmax=max(VisitDate), ymin=-Inf, ymax=Inf), alpha = 0.1, fill = "#D81B60") + theme(text = element_text(size=14))
+supp_plot1_v3 
+
+ggsave(supp_plot1_v3, file="FigureS1.png", width = 30, height = 15, units = "cm")
+
+```
+
+#### Electronic supplementary materials plots: S3.1-S3.20. 
+Is same as code above but formatted so Time is plotted instead of time continuous
+```{r}
+#### Now generate plots showing flagged detections ####
+# Also a check to make sure the correct data point was labelled
+FigureS2_data <- Tb_data_v3
+FigureS2_data$Time <- as.POSIXct(Tb_data_v3$Scan.Time, format = "%H:%M:%S")
+
+for (i in HEX.tag) 
+{
+  HEX.tag.records <- subset(FigureS2_data, HEX.Tag.ID == i )
+  
+  plot <- (ggplot(HEX.tag.records, aes(y = Temperature.C, x = Time, color = spurious)) +
+  geom_point() +
+  theme_bw() +
+  scale_color_manual(values = c("N" = "black","Y"="red"), name = "Spurious data point", labels = c("No", "Yes")) +
+  facet_wrap(~Scan.Date) +
+  ggtitle(paste0(i)) + xlab("Time") + ylab(expression("T"[b] ~"(°C)")))
+  
+  ggsave(plot, file=paste0("FigureS2_", i,".png"), width = 35, height = 15, units = "cm")
+  # scatter of each temperature measure vs time within each day
+}
+```
+
+### Additional plots for RE Peter Presentation
+```{r}
+# Within individual correlations between body temperature and daily feeder visits  
+# Plotting with raw data
+# Determine mean and sd for each individual and subtract from observed value
+RE_Peter_Figure_data <- data.table(daily_thermal_bird_forage)
+
+means.sd2 <- RE_Peter_Figure_data[, .(mean.daily.Tb = mean(mean.body.temperature, na.rm=TRUE), sd.daily.Tb = sd(mean.body.temperature, na.rm=TRUE) , mean.daily.feeder.visits = mean(total.feeder.visits, na.rm=TRUE), sd.daily.feeder.visits = sd(total.feeder.visits, na.rm=TRUE)), by= c("TransponderHexCode")] 
+
+RE_Peter_Figure_data_v2 <- merge(RE_Peter_Figure_data, means.sd2, by = "TransponderHexCode")
+
+RE_Peter_Figure_data_v2$centered.mean.Tb <- (RE_Peter_Figure_data_v2$mean.body.temperature-RE_Peter_Figure_data_v2$mean.daily.Tb)/RE_Peter_Figure_data_v2$sd.daily.Tb
+
+RE_Peter_Figure_data_v2$centered.total.feeder.visits <- (RE_Peter_Figure_data_v2$total.feeder.visits-RE_Peter_Figure_data_v2$mean.daily.feeder.visits)/RE_Peter_Figure_data_v2$sd.daily.feeder.visits
+
+
+RE_Peter_Figure1 <- ggplot(data = RE_Peter_Figure_data_v2, aes(x = centered.mean.Tb, y = centered.total.feeder.visits))+geom_point()+theme_classic()+xlab(expression("within-individual centered daily mean T"[b]))+ylab(expression("within-individual centered daily feeder visits"))+theme(text = element_text(size = 16))
+RE_Peter_Figure1
+
+ggsave("RE_Peter_Figure1.png", RE_Peter_Figure1, width = 12, height = 8, dpi = 300, units = "in", device='png')
+
+# Among-individual correlations between daily mean body temperature and daily feeder visits
+# Code adopted from the Houslay et al. 2017 tutorial 
+df_Tb_feedervisits_coefs <- tibble(Trait = attr(colMeans(MCMC_model4$Sol), "names"),
+Value = colMeans(MCMC_model4$Sol)) %>%
+separate(Trait, c("Trait","Type1", "Type2", "Type3","TransponderHexCode"), sep = "\\.", fill = "right") %>%
+filter(Type3 == "TransponderHexCode") %>%
+unite(Trait, c(Trait, Type1, Type2), sep = "", remove = TRUE) %>%
+spread(Trait, Value)
+
+# remove Type3 column 
+df_Tb_feedervisits_coefs_v2 <- df_Tb_feedervisits_coefs[,-1]
+
+# Find the regression line -
+# the covariance of boldness, relative fitness divided by
+# the variance in boldness
+Tb_feedervisits_slope <- MCMC_model4$VCV[,"traittotal.feeder.visits:traitmean.body.temperature.TransponderHexCode"]/
+MCMC_model4$VCV[,"traitmean.body.temperature:traitmean.body.temperature.TransponderHexCode"]
+ggplot(df_Tb_feedervisits_coefs_v2, aes(x = traitmeanbodytemperature, y = traittotalfeedervisits, group = TransponderHexCode)) +
+geom_point(alpha = 0.7) +
+geom_abline(intercept = 0, slope = mean(Tb_feedervisits_slope)) +
+labs(x = "Daily mean body temperature (BLUP)",
+y = "Daily feeder visits (BLUP)") +
+theme_classic()
+```

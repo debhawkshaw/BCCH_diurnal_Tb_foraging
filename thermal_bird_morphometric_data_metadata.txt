@@ -1,0 +1,18 @@
+File name: "thermal_bird_morphometric_data.csv"
+Project: Individual variation in dirunal body temperature and foraging activity in overwintering black-capped chickadees
+Authors: Deborah M. Hawkshaw, Jan J. Wijmenga, Kimberley J. Mathot
+Institution: University of Alberta 
+Location: University of Alberta Botanic Garden
+Study period: December 2022 - March 2023
+Compiled by: Deborah M. Hawkshaw
+
+Description: 
+Morphometric data recorded at each capture of the two birds in the dataset that were not able to be sexed molecularly (Ring-numbers: 2960-72716 and 2960-72801). This data was used to determine sex via a descriminant function. If there was multiple captures were morphometric data was available, the average of the measurements was calculated. Measurements taken by Jan J. Wijmenga.
+
+Varaibles:
+CatchLocationID: The location ID of the feeder that the bird was captured at. During this study was always "Feeder14A", the thermal feeder.
+CatchDate: Date of the bird was captured, format is YYYY-MM-DD.
+CatchRingNumber: The unique number on the aluminum leg band the chicadee recieved upon first capture. 
+BodyMassField: The body mass of the chickadee during the capture. Measured in grams. 
+WingLength: Wing length of the chickadee measured in millimeters. 
+Tarsus: Tarus length of the chickadee measured in millimeters.

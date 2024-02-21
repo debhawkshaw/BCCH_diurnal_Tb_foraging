@@ -1,0 +1,33 @@
+File name(s): "feeder_14_download_2022_12_12.csv", "feeder_14_download_2023_01_10.csv", "feeder_14_download_2023_01_10_clearing_before_video.csv",  "feeder_14_download_2023_01_10_video.csv",  "feeder_14_download_2023_02_03.csv", "feeder_14_download_2023_02_25.csv", "feeder_14_download_2023_03_17.csv"
+
+Project: Individual variation in dirunal body temperature and foraging activity in overwintering black-capped chickadees
+Authors: Deborah M. Hawkshaw, Jan J. Wijmenga, Kimberley J. Mathot
+Institution: University of Alberta 
+Location: University of Alberta Botanic Garden
+Study period: December 2022 - March 2023
+Created by: Deborah M. Hawkshaw
+
+Description(s): 
+Data files represent raw data files downloaded from the RFID reader (BioMark Small Scale Monitoring System) set-up in the thermal feeder (Feeder14). The date in each indicated in each file name represents the date the data was downloaded from the feeder and the data file was created. After the data was downloaded from the feeder the memory of the reader was erased. Rows within each file represent the date and time each time a thermal passive integrated transponder (PIT) tag or observer PIT tag was detected by the circular antenna. If the PIT tag was capable of sensing temperature, a temperature in degrees Celcius was recorded, though occassionally no temperature was recorded (blank record). 
+
+Files "feeder_14_download_2023_02_03.csv", "feeder_14_download_2023_02_25.csv", "feeder_14_download_2023_03_17.csv" were used for analyses regarding the relationship between daytime body temeprature and foraging rates, as well as to determine the duration of observer visits to the thermal feeder (ESM Table S3). 
+All data files were used to create ESM Figure S2. Files "feeder_14_download_2023_01_10_clearing_before_video.csv",  "feeder_14_download_2023_01_10_video.csv" represents detections that occurred during video observations or while the camera record the video observations was being set up, respectively. 
+The file "feeder_14_download_2023_01_10_video.csv" was used to confirm video observations of thermal birds and ensure the antenna sensivity was such that only birds that were directly at the antenna/feeder opening. This analysis is displayed in ESM Table S2. 
+
+Note: There is a PIT tag (Hexidecimal code "3D9.20DCE5ED90") that was detected once on March 4th, 2023 that does not represent a thermal bird PIT tag or observer PIT tag and appears to have been spuriously generated.
+
+Variables: 
+Scan Date: Date the thermal PIT tag implanted in a chickadee or observer PIT tag was detected. "3D9.20D4817F1C" and "3DD.0077C58F24" are the hexidecimal code the observer PIT tags.
+Scan Time: Date the thermal PIT tag implanted in a chickadee or observer PIT tag was detected.
+Download Date: Date the detection record was downloaded.
+Download Time: Time the detection record was downloaded. 
+Reader ID: Unique ID of the reader (Small Scale Monitoring System). Is always 001 as only one reader was used in the study.
+Antenna ID: Unique ID of the cicular antenna that was attached to the reader. Is always 001 as only one antenna was attached to the reader. 
+HEX Tag ID: Unique hexidecimal code the thermal PIT tag implanted in a chickadee or observer PIT tag.
+DEC Tag ID: Unique hexidecimal code the thermal PIT tag implanted in a chickadee or observer PIT tag.
+Temperature,C: Temperature of the PIT tag in degrees Celcius (C) at the time of detection. Is blank if no temperature was detected (either PIT tag could not sense temperature or signal communicating tag temperature failed). The codes LL.L and HH.H represent temperature that were detected that were outside the lower and upper bounds of was the thermal PIT tags could detect.
+Signal,mV: Signal strength in millivolts (mV) when thermal PIT tag or observer PIT tag was detected. 
+Is Duplicate: Indicates whether or not the thermal PIT tag or observer tag was previously detected (Yes). Is blan if the detection of the thermal or observer PIT tag is the first detection of the tag in the file.
+Latitude: GPS coordinates of the circular antenna/reader location in degrees latitude. Is blank as the location of the antenna/reader set-up was not recorded.
+Longitude: GPS coordinates of the circular antenna/reader location in degrees longitude. Is blank as the location of the antenna/reader set-up was not recorded.
+File Name: Name of the file the detection is associated with, if specified. In all cases is not specified. 

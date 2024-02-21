@@ -1,0 +1,17 @@
+File name: "temperature_daylength_20230111_20230228.csv"
+Project: Individual variation in dirunal body temperature and foraging activity in over-wintering black-capped chickadees
+Authors: Deborah M. Hawkshaw, Jan J. Wijmenga, Kimberley J. Mathot
+Institution: University of Alberta 
+Location: University of Alberta Botanic Garden
+Study period: December 2022 - March 2023
+Data sources: Agriculture and Irrigation Alberta Climate Information Service; Sunrise/Sunset Calculator National Research Council Canada
+Complied by: Deborah M. Hawkshaw
+
+Description:
+Compilted data on daily mean ambient temperature and daylength from January 11, 2023 to February 28, 2023 (study period data was analyzed for). Data on daily mean ambient temperature was obtained via the Agriculture and Irrigation Alberta Climate Information Service (https://agriculture.alberta.ca/acis/weather-data-viewer.jsp) and reflects data collected from a weather station located at the Edmonton International Airport (YEG). Data on daylength was obtained via the National Research Council Canada's sunrise/sunset calculator (https://nrc.canada.ca/en/research-development/products-services/software-applications/sun-calculator/) and reflects the daylength (hours of illumination - day) in the city of Edmonton.
+
+
+Variables:
+Date: Date presented in YYYY-MM-DD.
+Avg.temp.C: Average ambient temperature in degrees celcius (C) for the given day.
+Daylength.Hr: Daylength in hours (Hr) for the given day. 

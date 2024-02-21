@@ -1,0 +1,18 @@
+File name: "thermal_bird_info.csv"
+Project: Individual variation in dirunal body temperature and foraging activity in overwintering black-capped chickadees
+Authors: Deborah M. Hawkshaw, Jan J. Wijmenga, Kimberley J. Mathot
+Institution: University of Alberta 
+Location: University of Alberta Botanic Garden
+Study period: December 2022 - March 2023
+Complied by: Deborah M. Hawkshaw
+
+Description: 
+Information on the ring number, thermal PIT tag hexidecimal and decimal code, legband embedded PIT tag hexidecimal code and sex of each chickadee that received a thermal PIT tag in fall/winter of the study period (November 2022 - January 2023). Sex was determined via molecular sexing of a small sample of blood. 
+
+Variables: 
+CatchRingNumber: The unique number on the aluminum leg band the chickadee recieved upon it's first capture. Format is XXXX-XXXXX where X represents a unique number.
+ThermalTransponderDecCode: The unique decimal code of the thermal PIT tag implanted into the chickadee. In csv file gets displayed as 9.85141E+14, but if you click on each individual cell the entire decimal code is displayed.
+ThermalTransponderHexCode: The unique hexidecimal code of the thermal PIT tag implanted into the chickadee. 
+TranspoderHexCode: The unique hexidecimal code of the leg-band embedded PIT tag the chickadee recieved.
+SexConclusion: Sex of the chickadee, either Male or Female. Blanks represent individuals that we were unable to molecularly sex (blood sample not taken or insuffcient amount of blood taken). 
+
