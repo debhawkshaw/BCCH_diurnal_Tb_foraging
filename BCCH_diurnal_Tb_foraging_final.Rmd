@@ -1291,7 +1291,7 @@ Figure2.2a <- ggplot(data = Figure2a_data_v3, aes(x = centered.visit.Tb, y = cen
   xlab(expression("Within-individual centered visit T"[b])) +
   ylab(expression("Within-individual centered IVI")) +
   theme(text = element_text(size = 16)) +
-  labs(tag = "a")
+  labs(tag = "a") + geom_smooth(method = "lm")
 Figure2.2a
 
 ##### Within individual correlations between body temperature and daily foraging rate #####
@@ -1314,7 +1314,7 @@ Figure2b <- ggplot(data = Figure2b_data_v2, aes(x = centered.mean.Tb, y = center
   xlab(expression("Within-individual centered daily mean visit T"[b])) +
   ylab(expression("Within-individual centered daily foraging rate")) +
   theme(text = element_text(size = 16)) +
-  labs(tag = "b")
+  labs(tag = "b") + geom_smooth(method = "lm")
 Figure2b
 
 # Combine panels into one figure
