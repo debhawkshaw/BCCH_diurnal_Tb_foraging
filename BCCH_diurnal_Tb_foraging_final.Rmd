@@ -1314,8 +1314,9 @@ Figure2b <- ggplot(data = Figure2b_data_v2, aes(x = centered.mean.Tb, y = center
   xlab(expression("Within-individual centered daily mean visit T"[b])) +
   ylab(expression("Within-individual centered daily foraging rate")) +
   theme(text = element_text(size = 16)) +
-  labs(tag = "b") + geom_smooth(method = "lm")
+  labs(tag = "b") 
 Figure2b
+
 
 # Combine panels into one figure
 Figure2 <- ggarrange(Figure2.2a, Figure2b, ncol = 2, nrow = 1)
