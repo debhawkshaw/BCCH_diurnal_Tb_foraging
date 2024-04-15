@@ -1257,73 +1257,6 @@ summary(MCMC_model8_prior2)
 
 ### Figures presented in main text.
 
-#### Figure 2. Within individual correlations
-
-```{r}
-##### Within individual correlations between body temperature and IVI #####
-# Plotting with raw data
-# Determine mean and sd for each individual
-Figure2a_data <- data.table(thermal_bird_forage_v2)
-
-means.sd <- Figure2a_data[, .(mean.visit.Tb = mean(median.visit.temperature.C, na.rm = TRUE), sd.visit.Tb = sd(median.visit.temperature.C, na.rm = TRUE), mean.IVI = mean(IVI, na.rm = TRUE), sd.IVI = sd(IVI, na.rm = TRUE)), by = c("TransponderHexCode")]
-
-Figure2a_data_v2 <- merge(Figure2a_data, means.sd, by = "TransponderHexCode")
-
-# Standardize visit body temperature and IVI
-Figure2a_data_v2$centered.visit.Tb <- (Figure2a_data_v2$median.visit.temperature.C - Figure2a_data_v2$mean.visit.Tb) / Figure2a_data_v2$sd.visit.Tb
-
-Figure2a_data_v2$centered.IVI <- (Figure2a_data_v2$IVI - Figure2a_data_v2$mean.IVI) / Figure2a_data_v2$sd.IVI
-
-# Subset for plotting (take every 10th data point). Including every data point makes the plot quiet busy but doesn't change interpretation.
-
-sequence <- seq(0, 49965, by = 10)
-Figure2a_data_v3 <- Figure2a_data_v2 %>%
-  slice(sequence)
-
-#### All data points ####
-# Figure2a <- ggplot(data = Figure2_data_v2, aes(x = centered.visit.Tb, y = centered.IVI))+geom_point()+theme_classic()+xlab(expression("within-individual centered Visit T"[b]))+ylab(expression("within-individual centered IVI"))+theme(text = element_text(size = 16))
-# Figure2a
-
-#### Every 10th data point ####
-Figure2.2a <- ggplot(data = Figure2a_data_v3, aes(x = centered.visit.Tb, y = centered.IVI)) +
-  geom_point() +
-  theme_classic() +
-  xlab(expression("Within-individual centered visit T"[b])) +
-  ylab(expression("Within-individual centered IVI")) +
-  theme(text = element_text(size = 16)) +
-  labs(tag = "a") + geom_smooth(method = "lm")
-Figure2.2a
-
-##### Within individual correlations between body temperature and daily foraging rate #####
-# Plotting with raw data
-# Determine mean and sd for each individual and subtract from observed value
-Figure2b_data <- data.table(daily_thermal_bird_forage)
-
-means.sd2 <- Figure2b_data[, .(mean.daily.Tb = mean(mean.body.temperature, na.rm = TRUE), sd.daily.Tb = sd(mean.body.temperature, na.rm = TRUE), mean.daily.feeder.visits = mean(total.feeder.visits, na.rm = TRUE), sd.daily.feeder.visits = sd(total.feeder.visits, na.rm = TRUE)), by = c("TransponderHexCode")]
-
-Figure2b_data_v2 <- merge(Figure2b_data, means.sd2, by = "TransponderHexCode")
-
-Figure2b_data_v2$centered.mean.Tb <- (Figure2b_data_v2$mean.body.temperature - Figure2b_data_v2$mean.daily.Tb) / Figure2b_data_v2$sd.daily.Tb
-
-Figure2b_data_v2$centered.total.feeder.visits <- (Figure2b_data_v2$total.feeder.visits - Figure2b_data_v2$mean.daily.feeder.visits) / Figure2b_data_v2$sd.daily.feeder.visits
-
-
-Figure2b <- ggplot(data = Figure2b_data_v2, aes(x = centered.mean.Tb, y = centered.total.feeder.visits)) +
-  geom_point() +
-  theme_classic() +
-  xlab(expression("Within-individual centered daily mean visit T"[b])) +
-  ylab(expression("Within-individual centered daily foraging rate")) +
-  theme(text = element_text(size = 16)) +
-  labs(tag = "b") 
-Figure2b
-
-
-# Combine panels into one figure
-Figure2 <- ggarrange(Figure2.2a, Figure2b, ncol = 2, nrow = 1)
-Figure2
-ggsave("Figure2.png", Figure2, width = 15, height = 7, dpi = 300, units = "in", device = "png")
-```
-
 #### Figure 3. Effect of ambient temperature on IVI, visit body temperature, daily mean body temperature and daily foraging rate.
 
 ```{r}
@@ -1526,23 +1459,23 @@ feeder14 <- data.table(feeder14)
 feeder14_birdvisits <- feeder14[, .(BirdNumbers = length(unique(TransponderHexCode))), by = c("VisitDate")]
 
 # Generate plot
-supp_plot1 <- ggplot(feeder14_birdvisits, aes(VisitDate, BirdNumbers)) +
+FigureS2 <- ggplot(feeder14_birdvisits, aes(VisitDate, BirdNumbers)) +
   geom_point() +
   theme_classic() +
   ylab("Number of birds") +
   xlab("Date")
 
 # Add lines for dates when antenna sensitivity was adjusted (2023-01-10) and date test of feeders with new desgin started (2023-03-01).
-supp_plot1_v2 <- supp_plot1 + geom_vline(xintercept = as.numeric(as.Date(c("2023-01-10", "2023-03-01"))), linetype = c("dashed", "dotdash"), linewidth = 1.2, col = c("#1E88E5", "#FFA824"))
+FigureS2_v2 <- FigureS2 + geom_vline(xintercept = as.numeric(as.Date(c("2023-01-10", "2023-03-01"))), linetype = c("dashed", "dotdash"), linewidth = 1.2, col = c("#1E88E5", "#FFA824"))
 
 # Add shaded area for catching. First day was December 4th, last day was January 2nd.
 shade <- as.data.frame(as.Date(c("2022-12-04", "2023-01-02")))
 colnames(shade) <- "VisitDate"
 shade$BirdNumbers <- c(20, 0)
-supp_plot1_v3 <- supp_plot1_v2 + geom_rect(data = shade, aes(xmin = min(VisitDate), xmax = max(VisitDate), ymin = -Inf, ymax = Inf), alpha = 0.1, fill = "#D81B60") + theme(text = element_text(size = 14))
-supp_plot1_v3
+FigureS2_v3 <- FigureS2_v2 + geom_rect(data = shade, aes(xmin = min(VisitDate), xmax = max(VisitDate), ymin = -Inf, ymax = Inf), alpha = 0.1, fill = "#D81B60") + theme(text = element_text(size = 14))
+FigureS2_v3
 
-ggsave(supp_plot1_v3, file = "FigureS1.png", width = 30, height = 15, units = "cm")
+ggsave(FigureS2_v3, file = "FigureS2.png", width = 30, height = 15, units = "cm")
 
 ```
 
@@ -1553,12 +1486,12 @@ Is same as code above but formatted so Time is plotted instead of Time continuou
 ```{r}
 #### Now generate plots showing flagged detections ####
 # Also a check to make sure the correct data point was labelled
-FigureS2_data <- Tb_data_v3
-FigureS2_data$Time <- as.POSIXct(Tb_data_v3$Scan.Time, format = "%H:%M:%S")
+FigureS3_data <- Tb_data_v3
+FigureS3_data$Time <- as.POSIXct(Tb_data_v3$Scan.Time, format = "%H:%M:%S")
 
 for (i in HEX.tag)
 {
-  HEX.tag.records <- subset(FigureS2_data, HEX.Tag.ID == i)
+  HEX.tag.records <- subset(FigureS3_data, HEX.Tag.ID == i)
 
   plot <- (ggplot(HEX.tag.records, aes(y = Temperature.C, x = Time, color = spurious)) +
     geom_point() +
@@ -1569,7 +1502,74 @@ for (i in HEX.tag)
     xlab("Time") +
     ylab(expression("T"[b] ~ "(°C)")))
 
-  ggsave(plot, file = paste0("FigureS2_", i, ".png"), width = 35, height = 15, units = "cm")
+  ggsave(plot, file = paste0("FigureS3_", i, ".png"), width = 35, height = 15, units = "cm")
   # scatter plot of each temperature measure vs time within each day
 }
+```
+
+#### Figure 4S. Within individual correlations
+
+```{r}
+##### Within individual correlations between body temperature and IVI #####
+# Plotting with raw data
+# Determine mean and sd for each individual
+FigureS4a_data <- data.table(thermal_bird_forage_v2)
+
+means.sd <- FigureS4a_data[, .(mean.visit.Tb = mean(median.visit.temperature.C, na.rm = TRUE), sd.visit.Tb = sd(median.visit.temperature.C, na.rm = TRUE), mean.IVI = mean(IVI, na.rm = TRUE), sd.IVI = sd(IVI, na.rm = TRUE)), by = c("TransponderHexCode")]
+
+FigureS4a_data_v2 <- merge(FigureS4a_data, means.sd, by = "TransponderHexCode")
+
+# Standardize visit body temperature and IVI
+FigureS4a_data_v2$centered.visit.Tb <- (FigureS4a_data_v2$median.visit.temperature.C - FigureS4a_data_v2$mean.visit.Tb) / FigureS4a_data_v2$sd.visit.Tb
+
+FigureS4a_data_v2$centered.IVI <- (FigureS4a_data_v2$IVI - FigureS4a_data_v2$mean.IVI) / FigureS4a_data_v2$sd.IVI
+
+# Subset for plotting (take every 10th data point). Including every data point makes the plot quiet busy but doesn't change interpretation.
+
+sequence <- seq(0, 49965, by = 10)
+FigureS4a_data_v3 <- FigureS4_data_v2 %>%
+  slice(sequence)
+
+#### All data points ####
+# FigureS4a <- ggplot(data = FigureS4a_data_v2, aes(x = centered.visit.Tb, y = centered.IVI))+geom_point()+theme_classic()+xlab(expression("within-individual centered Visit T"[b]))+ylab(expression("within-individual centered IVI"))+theme(text = element_text(size = 16))
+# FigureS4a
+
+#### Every 10th data point ####
+FigureS4.2a <- ggplot(data = FigureS4a_data_v3, aes(x = centered.visit.Tb, y = centered.IVI)) +
+  geom_point() +
+  theme_classic() +
+  xlab(expression("Within-individual centered visit T"[b])) +
+  ylab(expression("Within-individual centered IVI")) +
+  theme(text = element_text(size = 16)) +
+  labs(tag = "a") + geom_smooth(method = "lm")
+FigureS4.2a
+
+##### Within individual correlations between body temperature and daily foraging rate #####
+# Plotting with raw data
+# Determine mean and sd for each individual and subtract from observed value
+FigureS4b_data <- data.table(daily_thermal_bird_forage)
+
+means.sd2 <- FigureS4b_data[, .(mean.daily.Tb = mean(mean.body.temperature, na.rm = TRUE), sd.daily.Tb = sd(mean.body.temperature, na.rm = TRUE), mean.daily.feeder.visits = mean(total.feeder.visits, na.rm = TRUE), sd.daily.feeder.visits = sd(total.feeder.visits, na.rm = TRUE)), by = c("TransponderHexCode")]
+
+FigureS4b_data_v2 <- merge(FigureS4b_data, means.sd2, by = "TransponderHexCode")
+
+FigureS4b_data_v2$centered.mean.Tb <- (FigureS4b_data_v2$mean.body.temperature - FigureS4b_data_v2$mean.daily.Tb) / FigureS4b_data_v2$sd.daily.Tb
+
+FigureS4b_data_v2$centered.total.feeder.visits <- (FigureS4b_data_v2$total.feeder.visits - FigureS4b_data_v2$mean.daily.feeder.visits) / FigureS4b_data_v2$sd.daily.feeder.visits
+
+
+FigureS4b <- ggplot(data = FigureS4b_data_v2, aes(x = centered.mean.Tb, y = centered.total.feeder.visits)) +
+  geom_point() +
+  theme_classic() +
+  xlab(expression("Within-individual centered daily mean visit T"[b])) +
+  ylab(expression("Within-individual centered daily foraging rate")) +
+  theme(text = element_text(size = 16)) +
+  labs(tag = "b") 
+FigureS4b
+
+
+# Combine panels into one figure
+FigureS4 <- ggarrange(FigureS4.2a, FigureS4b, ncol = 2, nrow = 1)
+FigureS4
+ggsave("FigureS4.png", FigureS4, width = 15, height = 7, dpi = 300, units = "in", device = "png")
 ```
