@@ -23,7 +23,6 @@ library(lme4) # version 1.1-33
 library(MCMCglmm) # version 2.35
 library(tidyverse) # version 2.0.0
 library(broom) # version 1.0.5
-library(nadiv) # version 2.17.2
 library(broom.mixed) # version 0.2.9.4
 library(ggpubr) # version 0.60
 ```
