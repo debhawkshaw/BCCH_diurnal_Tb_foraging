@@ -1276,7 +1276,7 @@ Figure2a <- ggplot(data = MCMC_model1_predict_df, aes(x = Avg.temp.C, y = median
   stat_smooth(aes(y = fit.visit.Tb.upr), method = "lm", linetype = 2, se = FALSE, size = 0.75, col = "red") +
   ylab(expression("Visit T"[b] ~ "(°C)")) +
   xlab(expression("Daily mean T"[a] ~ "(°C)")) +
-  labs(tag = "a") +
+  labs(tag = "A") +
   theme(text = element_text(size = 16))
 Figure2a
 
@@ -1288,7 +1288,7 @@ Figure2b <- ggplot(data = MCMC_model1_predict_df, aes(x = Avg.temp.C, y = IVI)) 
   stat_smooth(aes(y = fit.IVI.upr), method = "lm", linetype = 2, se = FALSE, size = 0.75, col = "red") +
   ylab(expression("IVI (sec)")) +
   xlab(expression("Daily mean T"[a] ~ "(°C)")) +
-  labs(tag = "b") +
+  labs(tag = "B") +
   theme(text = element_text(size = 16))
 Figure2b
 
@@ -1309,7 +1309,7 @@ Figure2c <- ggplot(data = MCMC_model4_predict_df, aes(x = Avg.temp.C, y = mean.b
   stat_smooth(aes(y = fit.daily.Tb.upr), method = "lm", linetype = 2, se = FALSE, size = 0.75, col = "red") +
   ylab(expression("Daily mean visit T"[b] ~ "(°C)")) +
   xlab(expression("Daily mean T"[a] ~ "(°C)")) +
-  labs(tag = "c") +
+  labs(tag = "C") +
   theme(text = element_text(size = 16))
 Figure2c
 
@@ -1321,14 +1321,14 @@ Figure2d <- ggplot(data = MCMC_model4_predict_df, aes(x = Avg.temp.C, y = total.
   stat_smooth(aes(y = fit.daily.visits.upr), method = "lm", linetype = 2, se = FALSE, size = 0.75, col = "red") +
   ylab(expression("Daily foraging rate")) +
   xlab(expression("Daily mean T"[a] ~ "(°C)")) +
-  labs(tag = "d") +
+  labs(tag = "D") +
   theme(text = element_text(size = 16))
 Figure2d
 
 # Combine panels into one figure
 Figure2 <- ggarrange(Figure2a, Figure2b, Figure2c, Figure2d, ncol = 2, nrow = 2)
 Figure2
-ggsave("Figure2.png", Figure2, width = 13, height = 9, dpi = 300, units = "in", device = "png")
+ggsave("Figure2.tiff", Figure2, width = 13, height = 9, dpi = 300, units = "in", device = "tiff")
 
 ```
 
