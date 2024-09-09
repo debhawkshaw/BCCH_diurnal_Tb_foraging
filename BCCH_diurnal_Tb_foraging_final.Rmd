@@ -1319,7 +1319,7 @@ Figure2d <- ggplot(data = MCMC_model4_predict_df, aes(x = Avg.temp.C, y = total.
   stat_smooth(aes(y = fit.daily.visits.fit), method = "lm", se = FALSE, col = "red") +
   stat_smooth(aes(y = fit.daily.visits.lwr), method = "lm", linetype = 2, se = FALSE, size = 0.75, col = "red") +
   stat_smooth(aes(y = fit.daily.visits.upr), method = "lm", linetype = 2, se = FALSE, size = 0.75, col = "red") +
-  ylab(expression("Daily foraging rate")) +
+  ylab(expression("Total daily feeder visits")) +
   xlab(expression("Daily mean T"[a] ~ "(°C)")) +
   labs(tag = "D") +
   theme(text = element_text(size = 16))
@@ -1571,7 +1571,7 @@ FigureS4b <- ggplot(data = FigureS4b_data_v2, aes(x = centered.mean.Tb, y = cent
   geom_point() +
   theme_classic() +
   xlab(expression("Within-individual centered daily mean visit T"[b])) +
-  ylab(expression("Within-individual centered daily foraging rate")) +
+  ylab(expression("Within-individual centered total daily feeder visits")) +
   theme(text = element_text(size = 16)) +
   labs(tag = "b") 
 FigureS4b
